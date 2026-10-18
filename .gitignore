@@ -1,0 +1,10 @@
+.venv/
+data/
+__pycache__/
+.claude/
+
+# clone upstream Kiwi TCMS (lihat README, bagian Setup)
+Kiwi/
+
+# data test case hasil ekspor Zebrunner (data internal, jangan dipublikasikan)
+scripts/zebrunner_*.json

@@ -1,0 +1,8 @@
+nodeLinker: hoisted
+autoInstallPeers: true
+overrides:
+  bootstrap: 3.4.1
+  bootstrap-select: 1.13.18
+  eonasdan-bootstrap-datetimepicker: 4.17.49
+  jquery: 3.6.1
+  moment-timezone: 0.5.38
