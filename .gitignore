@@ -8,3 +8,6 @@ Kiwi/
 
 # data test case hasil ekspor Zebrunner (data internal, jangan dipublikasikan)
 scripts/zebrunner_*.json
+
+# konfigurasi lokal (berisi password)
+.env

@@ -1,6 +1,6 @@
 # kiwi-tcms
 
-Setup lokal [Kiwi TCMS](https://github.com/kiwitcms/Kiwi) (test case management system open source) untuk laptop, memakai `uv`, `pnpm`, dan SQLite. Tujuannya mempelajari model data dan alur kerja TCM, serta membandingkannya dengan Zebrunner.
+Setup lokal [Kiwi TCMS](https://github.com/kiwitcms/Kiwi) (test case management system open source) untuk laptop, memakai `uv`, `pnpm`, dan SQLite atau PostgreSQL (dipilih lewat `.env`). Tujuannya mempelajari model data dan alur kerja TCM, serta membandingkannya dengan Zebrunner.
 
 Repo ini **tidak berisi kode Kiwi**. Kode upstream di-clone ke folder `Kiwi/` (di-ignore git). Repo ini hanya menyimpan konfigurasi lokal, skrip bantu, dan dokumentasi.
 
@@ -8,12 +8,14 @@ Repo ini **tidak berisi kode Kiwi**. Kode upstream di-clone ke folder `Kiwi/` (d
 
 | Path | Fungsi |
 |---|---|
-| `kiwi_local_settings.py` | Settings Django lokal. Basis `tcms.settings.devel`, DB SQLite di `data/db.sqlite3`. |
+| `kiwi_local_settings.py` | Settings Django lokal. Basis `tcms.settings.devel`. Membaca `.env` dan memilih DB (SQLite atau PostgreSQL) lewat `KIWI_DB`. |
+| `.env.example` | Contoh `.env`. Salin ke `.env` dan sesuaikan. |
+| `.env` | Konfigurasi lokal (pilihan DB dan kredensial). Dibuat sendiri, di-ignore git. |
 | `run.sh` | Wrapper `manage.py` (mengatur `PYTHONPATH`, `DJANGO_SETTINGS_MODULE`, memakai `.venv`). |
 | `config/pnpm-workspace.yaml` | Konfigurasi pnpm untuk frontend Kiwi. Disalin ke `Kiwi/tcms/` saat setup. |
 | `scripts/import_zebrunner_suite.py` | Mengimpor suite dan test case Zebrunner (format JSON) ke Kiwi. |
 | `.python-version`, `.node-version`, `.nvmrc` | Versi Python (3.14) dan Node (24). |
-| `data/` | DB SQLite dan upload. Dibuat otomatis, di-ignore git. |
+| `data/` | DB SQLite dan upload. Dibuat otomatis, di-ignore git. Tidak dipakai untuk data PostgreSQL. |
 
 ## Prasyarat
 
@@ -41,10 +43,74 @@ fnm use
 cp config/pnpm-workspace.yaml Kiwi/tcms/
 cd Kiwi/tcms && pnpm install && pnpm exec webpack && cd ../..
 
-# 4. Database SQLite dan akun admin
+# 4. Konfigurasi database (lihat bagian "Konfigurasi database")
+cp .env.example .env
+
+# 5. Skema database dan akun admin
 mkdir -p data
 ./run.sh migrate
 ./run.sh createsuperuser
+```
+
+## Konfigurasi database
+
+Pilihan database ada di file `.env` (dibaca oleh `kiwi_local_settings.py`). Salin dari contoh:
+
+```bash
+cp .env.example .env
+```
+
+Isi `.env`:
+
+```bash
+# Pilih satu: sqlite atau postgres
+KIWI_DB=postgres
+#KIWI_DB=sqlite
+
+# Dipakai saat KIWI_DB=postgres
+KIWI_DB_NAME=kiwi
+KIWI_DB_USER=kiwi
+KIWI_DB_PASSWORD=kiwi
+KIWI_DB_HOST=localhost
+KIWI_DB_PORT=5432
+```
+
+- Ganti database dengan comment atau uncomment baris `KIWI_DB`, lalu jalankan ulang `./run.sh`.
+- Tanpa `.env` atau tanpa `KIWI_DB`, defaultnya SQLite (`data/db.sqlite3`).
+- Env var shell menang atas `.env`, misalnya `KIWI_DB=sqlite ./run.sh runserver`.
+- Nilai `KIWI_DB` selain `sqlite` atau `postgres` menghasilkan `ValueError`.
+- `.env` berisi password dan di-ignore git. Hanya `.env.example` yang di-commit.
+
+### PostgreSQL lokal (podman)
+
+Driver: `uv pip install --python .venv/bin/python psycopg2-binary`. Lalu buat database dan role di container Postgres:
+
+```bash
+podman exec postgres-local psql -U postgres \
+  -c "CREATE DATABASE kiwi;" \
+  -c "CREATE ROLE kiwi LOGIN PASSWORD 'kiwi';" \
+  -c "ALTER DATABASE kiwi OWNER TO kiwi;"
+KIWI_DB=postgres ./run.sh migrate
+```
+
+### Memindahkan data SQLite ke PostgreSQL
+
+```bash
+# 1. Dump dari SQLite
+KIWI_DB=sqlite ./run.sh dumpdata --natural-foreign --natural-primary \
+  --exclude contenttypes --exclude auth.permission --exclude admin.logentry \
+  --exclude sessions --indent 1 -o data/sqlite_dump.json
+
+# 2. Buat skema dan muat data ke PostgreSQL
+KIWI_DB=postgres ./run.sh migrate
+KIWI_DB=postgres ./run.sh loaddata data/sqlite_dump.json
+```
+
+Jalankan pada database PostgreSQL yang masih kosong. Bila `loaddata` memakai ID eksplisit, reset sequence supaya insert berikutnya tidak bentrok:
+
+```bash
+KIWI_DB=postgres ./run.sh sqlsequencereset auth management testcases testplans testruns \
+  | podman exec -i postgres-local psql -U kiwi -d kiwi
 ```
 
 ## Menjalankan
@@ -59,13 +125,13 @@ Ini setup **development** (`DEBUG=True`), bukan untuk produksi.
 
 ## Penyimpanan data
 
-Semua data ada di satu file `data/db.sqlite3`:
+Dengan SQLite, semua data ada di satu file `data/db.sqlite3`. Dengan PostgreSQL, tabel yang sama ada di database `kiwi`:
 
 - User yang login: tabel `auth_user`
 - Test case, plan, dan run: tabel `testcases_*`, `testplans_*`, `testruns_*`
 - Riwayat perubahan: tabel `historical*` (django-simple-history)
 
-Backup cukup dengan menyalin file itu.
+Backup SQLite cukup dengan menyalin file itu. Untuk PostgreSQL pakai `podman exec postgres-local pg_dump -U kiwi kiwi > kiwi.sql`.
 
 ## Catatan teknis
 
