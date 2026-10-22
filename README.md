@@ -16,7 +16,7 @@ Repo ini **tidak berisi kode Kiwi**. Kode upstream di-clone ke folder `Kiwi/` (d
 | `scripts/import_zebrunner_suite.py` | Mengimpor suite dan test case Zebrunner (format JSON) ke Kiwi. |
 | `.python-version`, `.node-version`, `.nvmrc` | Versi Python (3.14) dan Node (24). |
 | `data/` | DB SQLite dan upload. Dibuat otomatis, di-ignore git. Tidak dipakai untuk data PostgreSQL. |
-| `render.yaml`, `deploy/` | Deploy ke Render (app) dengan PostgreSQL di Neon. Lihat bagian [Deploy ke Render + Neon](#deploy-ke-render--neon). |
+| `render.yaml`, `deploy/` | Deploy app ke Render atau Fly.io dengan PostgreSQL di Neon. Lihat [Deploy ke Render + Neon](#deploy-ke-render--neon) dan [Deploy ke Fly.io + Neon](#deploy-ke-flyio--neon). |
 
 ## Prasyarat
 
@@ -166,7 +166,8 @@ File di `deploy/` menyesuaikan image untuk Render. Render menghentikan TLS dan m
 | `nginx.conf` | Melayani HTTP di 8080, plus `/healthz` yang dijawab nginx tanpa menyentuh DB (supaya Neon bisa tidur). |
 | `tcms_settings_dir/50-render.py` | `SECRET_KEY` dari env (key upstream publik) dan `SECURE_PROXY_SSL_HEADER` agar redirect HTTPS Django tidak loop. |
 | `uwsgi.override` | 2 worker. Default upstream satu worker per core host, bisa melebihi RAM 512 MB. |
-| `start.sh` | `migrate`, `refresh_permissions`, buat admin dari env, set domain, lalu jalankan `/httpd-foreground`. |
+| `start.sh` | `migrate`, `refresh_permissions`, buat admin dari env, set domain (dari `RENDER_EXTERNAL_HOSTNAME` atau `FLY_APP_NAME`), lalu jalankan `/httpd-foreground`. |
+| `fly.toml` | Konfigurasi Fly.io. Tidak dipakai Render. |
 
 Langkah:
 
@@ -183,6 +184,56 @@ Catatan:
 - Plan `free`: tidur setelah 15 menit idle dan tidak ada disk, jadi file upload (attachment) hilang tiap redeploy. Untuk upload permanen, pakai plan berbayar dengan disk di `/Kiwi/uploads`.
 - Rate limit nginx untuk `/accounts/` memakai IP klien. Di belakang proxy Render, semua klien tampak berasal dari IP proxy, jadi batas 10 req/detik berlaku bersama.
 - Neon free tier tidur setelah 5 menit tanpa koneksi. Request pertama sesudahnya lebih lambat sekitar satu detik.
+
+## Deploy ke Fly.io + Neon
+
+Memakai `Dockerfile` dan file `deploy/` yang sama dengan Render. Konfigurasi Fly ada di `deploy/fly.toml` (region `sin`, RAM 512 MB, machine mati otomatis saat idle).
+
+1. Pasang flyctl dan login:
+
+   ```bash
+   curl -L https://fly.io/install.sh | sh
+   fly auth login
+   ```
+
+2. Fly tidak punya free tier untuk akun baru. Kartu prepaid/virtual sering ditolak sebagai metode tersimpan, tetapi biasanya bisa dipakai untuk membeli credits di *Dashboard → Billing → Buy Credits*.
+3. Buat app. Nama harus unik di seluruh Fly, dan harus sama dengan `app` di `deploy/fly.toml`:
+
+   ```bash
+   cd deploy
+   fly apps create kiwi-tcms-gallanpw
+   ```
+
+4. Isi secret. Perintah ini membaca `NAME=value` dari stdin, jadi password tidak masuk history shell. Tempel baris-barisnya, lalu tekan Ctrl-D:
+
+   ```bash
+   fly secrets import
+   ```
+
+   ```
+   SECRET_KEY=<string acak, python3 -c "import secrets; print(secrets.token_urlsafe(50))">
+   KIWI_DB_HOST=<host Neon, tanpa -pooler>
+   KIWI_DB_NAME=<database Neon>
+   KIWI_DB_USER=<user Neon>
+   KIWI_DB_PASSWORD=<password Neon>
+   DJANGO_SUPERUSER_USERNAME=<admin>
+   DJANGO_SUPERUSER_EMAIL=<email valid>
+   DJANGO_SUPERUSER_PASSWORD=<password admin>
+   ```
+
+5. Deploy dari folder `deploy/`. `--ha=false` wajib supaya hanya satu machine yang jalan. Dua machine akan menjalankan `migrate` bersamaan pada DB yang sama.
+
+   ```bash
+   fly deploy --ha=false
+   fly logs
+   ```
+
+6. Buka `https://kiwi-tcms-gallanpw.fly.dev` dan login. Lalu hapus password admin dari secret: `fly secrets unset DJANGO_SUPERUSER_PASSWORD`.
+
+Catatan:
+
+- Setiap kali machine bangun dari mati, `start.sh` menjalankan `migrate` lagi. Itu cepat bila skema sudah mutakhir, tetapi request pertama sesudah idle tetap lambat.
+- Upload (attachment) hilang saat machine dibuat ulang. Untuk upload permanen, buat volume (`fly volumes create`) dan mount ke `/Kiwi/uploads`.
 
 ## Impor data dari Zebrunner
 

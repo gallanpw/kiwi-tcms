@@ -1,0 +1,35 @@
+# Run flyctl from this directory (cd deploy): the build context is the
+# directory where flyctl runs, and the Dockerfile COPYs files next to it.
+# The app name must be globally unique on Fly.io; change it if it is taken.
+app = "kiwi-tcms-gallanpw"
+primary_region = "sin"
+
+# Secrets (set with `fly secrets import`, never here): SECRET_KEY,
+# KIWI_DB_HOST, KIWI_DB_NAME, KIWI_DB_USER, KIWI_DB_PASSWORD,
+# DJANGO_SUPERUSER_USERNAME, DJANGO_SUPERUSER_EMAIL, DJANGO_SUPERUSER_PASSWORD
+[env]
+  KIWI_DB_ENGINE = "django.db.backends.postgresql"
+  KIWI_DB_PORT = "5432"
+  PGSSLMODE = "require"
+
+[http_service]
+  # must match listen port in nginx.conf
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+
+  # answered by nginx, never touches the DB (lets Neon scale to zero)
+  [[http_service.checks]]
+    method = "GET"
+    path = "/healthz"
+    interval = "30s"
+    timeout = "5s"
+    # start.sh runs migrations before nginx starts
+    grace_period = "120s"
+
+[[vm]]
+  cpu_kind = "shared"
+  cpus = 1
+  memory = "512mb"

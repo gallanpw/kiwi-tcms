@@ -11,8 +11,13 @@ if [ -n "${DJANGO_SUPERUSER_USERNAME:-}" ]; then
     /Kiwi/manage.py createsuperuser --noinput || true
 fi
 
-if [ -n "${RENDER_EXTERNAL_HOSTNAME:-}" ]; then
-    /Kiwi/manage.py set_domain "$RENDER_EXTERNAL_HOSTNAME"
+# hostname env var set by the platform (Render or Fly.io)
+domain="${RENDER_EXTERNAL_HOSTNAME:-}"
+if [ -z "$domain" ] && [ -n "${FLY_APP_NAME:-}" ]; then
+    domain="$FLY_APP_NAME.fly.dev"
+fi
+if [ -n "$domain" ]; then
+    /Kiwi/manage.py set_domain "$domain"
 fi
 
 exec /httpd-foreground
