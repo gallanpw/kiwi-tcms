@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
-# Build the static files for PythonAnywhere and pack them in data/kiwi-static.tar.gz.
-# Run locally after the frontend bundle is built (see 'Setup' in README.md).
-# Only runtime npm packages are collected (about 100 MB instead of 195 MB), the
-# free plan has a 512 MB disk quota.
+# Collect the static files and pack them in data/kiwi-static.tar.gz.
+# Run by build_static_src.sh after the frontend bundle is built (see 'Setup' in README.md).
+# Only runtime npm packages are collected (about 100 MB instead of 195 MB).
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 root="$PWD"

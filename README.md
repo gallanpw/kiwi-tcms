@@ -2,7 +2,7 @@
 
 Setup lokal [Kiwi TCMS](https://github.com/kiwitcms/Kiwi) (test case management system open source) untuk laptop, memakai `uv`, `pnpm`, dan SQLite atau PostgreSQL (dipilih lewat `.env`). Tujuannya mempelajari model data dan alur kerja TCM, serta membandingkannya dengan Zebrunner.
 
-Repo ini **tidak menyalin kode Kiwi**. Kode upstream ada di folder `Kiwi/` sebagai git submodule yang di-pin ke satu commit (dibutuhkan Vercel dan PythonAnywhere untuk mengambil kode yang sama). Repo ini hanya menyimpan konfigurasi, skrip bantu, dan dokumentasi.
+Repo ini **tidak menyalin kode Kiwi**. Kode upstream ada di folder `Kiwi/` sebagai git submodule yang di-pin ke satu commit (dibutuhkan Vercel untuk mengambil kode yang sama). Repo ini hanya menyimpan konfigurasi, skrip bantu, dan dokumentasi.
 
 ## Isi repo
 
@@ -14,10 +14,9 @@ Repo ini **tidak menyalin kode Kiwi**. Kode upstream ada di folder `Kiwi/` sebag
 | `run.sh` | Wrapper `manage.py` (mengatur `PYTHONPATH`, `DJANGO_SETTINGS_MODULE`, memakai `.venv`). |
 | `config/pnpm-workspace.yaml` | Konfigurasi pnpm untuk frontend Kiwi. Disalin ke `Kiwi/tcms/` saat setup. |
 | `scripts/import_zebrunner_suite.py` | Mengimpor suite dan test case Zebrunner (format JSON) ke Kiwi. |
+| `scripts/import_zebrunner_runs.py` | Mengimpor test run Zebrunner beserta hasil eksekusinya ke Kiwi. |
 | `.python-version`, `.node-version`, `.nvmrc` | Versi Python (3.14) dan Node (24). |
 | `data/` | DB SQLite dan upload. Dibuat otomatis, di-ignore git. Tidak dipakai untuk data PostgreSQL. |
-| `render.yaml`, `deploy/` | Deploy app ke Render atau Fly.io dengan PostgreSQL di Neon. Lihat [Deploy ke Render + Neon](#deploy-ke-render--neon) dan [Deploy ke Fly.io + Neon](#deploy-ke-flyio--neon). |
-| `deploy/pythonanywhere/` | Deploy app ke PythonAnywhere (plan free, SQLite). Lihat [Deploy ke PythonAnywhere](#deploy-ke-pythonanywhere-plan-free). |
 | `vercel.json`, `pyproject.toml`, `manage.py`, `wsgi.py`, `kiwi_vercel_settings.py`, `static_src/`, `deploy/vercel/` | Deploy app ke Vercel dengan PostgreSQL di Neon. Lihat [Deploy ke Vercel + Neon](#deploy-ke-vercel--neon). |
 
 ## Prasyarat
@@ -157,192 +156,9 @@ Backup SQLite cukup dengan menyalin file itu. Untuk PostgreSQL pakai `podman exe
   - `autoInstallPeers: true` untuk memasang peer dependency
   - `overrides` untuk versi yang sama dengan `overrides` di `Kiwi/tcms/package.json`, karena pnpm 11 tidak membaca `overrides` dari `package.json`
 
-## Deploy ke Render + Neon
-
-App jalan di Render dari image resmi `kiwitcms/kiwi` (bukan dari folder `Kiwi/`). Database PostgreSQL di Neon.
-
-File di `deploy/` menyesuaikan image untuk Render. Render menghentikan TLS dan meneruskan HTTP biasa, sedangkan image asli hanya melayani HTTPS di 8443 dan hanya me-redirect di 8080 (redirect loop di Render).
-
-| File | Fungsi |
-|---|---|
-| `nginx.conf` | Melayani HTTP di 8080, plus `/healthz` yang dijawab nginx tanpa menyentuh DB (supaya Neon bisa tidur). |
-| `tcms_settings_dir/50-render.py` | `SECRET_KEY` dari env (key upstream publik) dan `SECURE_PROXY_SSL_HEADER` agar redirect HTTPS Django tidak loop. |
-| `uwsgi.override` | 2 worker. Default upstream satu worker per core host, bisa melebihi RAM 512 MB. |
-| `start.sh` | `migrate`, `refresh_permissions`, buat admin dari env, set domain (dari `RENDER_EXTERNAL_HOSTNAME` atau `FLY_APP_NAME`), lalu jalankan `/httpd-foreground`. |
-| `fly.toml` | Konfigurasi Fly.io. Tidak dipakai Render. |
-
-Langkah:
-
-1. **Neon:** buat project di region `aws-ap-southeast-1` (Singapore). Di dialog *Connect*, **matikan** *Connection pooling* agar host tanpa `-pooler`. Migrasi Django tidak cocok dengan pooler.
-2. **Render:** *New → Blueprint*, pilih repo ini. Isi variabel `sync: false` dari `render.yaml`:
-   - `KIWI_DB_HOST`, `KIWI_DB_NAME`, `KIWI_DB_USER`, `KIWI_DB_PASSWORD`: dari connection string Neon
-   - `DJANGO_SUPERUSER_USERNAME`, `DJANGO_SUPERUSER_EMAIL`, `DJANGO_SUPERUSER_PASSWORD`: admin pertama
-3. Setelah deploy pertama berhasil dan login jalan, hapus `DJANGO_SUPERUSER_PASSWORD` dari env Render.
-
-Catatan:
-
-- Image di-pull dengan tag `latest` (Docker Hub hanya menyediakan tag itu). Untuk build yang bisa diulang, ganti `KIWI_IMAGE` di `deploy/Dockerfile` dengan digest `kiwitcms/kiwi@sha256:...`.
-- `nginx.conf` adalah salinan upstream 16.6 yang diubah. Cek ulang diff-nya saat memperbarui image.
-- Plan `free`: tidur setelah 15 menit idle dan tidak ada disk, jadi file upload (attachment) hilang tiap redeploy. Untuk upload permanen, pakai plan berbayar dengan disk di `/Kiwi/uploads`.
-- Rate limit nginx untuk `/accounts/` memakai IP klien. Di belakang proxy Render, semua klien tampak berasal dari IP proxy, jadi batas 10 req/detik berlaku bersama.
-- Neon free tier tidur setelah 5 menit tanpa koneksi. Request pertama sesudahnya lebih lambat sekitar satu detik.
-
-## Deploy ke Fly.io + Neon
-
-Memakai `Dockerfile` dan file `deploy/` yang sama dengan Render. Konfigurasi Fly ada di `deploy/fly.toml` (region `sin`, RAM 512 MB, machine mati otomatis saat idle).
-
-1. Pasang flyctl dan login:
-
-   ```bash
-   curl -L https://fly.io/install.sh | sh
-   fly auth login
-   ```
-
-2. Fly tidak punya free tier untuk akun baru. Kartu prepaid/virtual sering ditolak sebagai metode tersimpan, tetapi biasanya bisa dipakai untuk membeli credits di *Dashboard → Billing → Buy Credits*.
-3. Buat app. Nama harus unik di seluruh Fly, dan harus sama dengan `app` di `deploy/fly.toml`:
-
-   ```bash
-   cd deploy
-   fly apps create kiwi-tcms-gallanpw
-   ```
-
-4. Isi secret. Perintah ini membaca `NAME=value` dari stdin, jadi password tidak masuk history shell. Tempel baris-barisnya, lalu tekan Ctrl-D:
-
-   ```bash
-   fly secrets import
-   ```
-
-   ```
-   SECRET_KEY=<string acak, python3 -c "import secrets; print(secrets.token_urlsafe(50))">
-   KIWI_DB_HOST=<host Neon, tanpa -pooler>
-   KIWI_DB_NAME=<database Neon>
-   KIWI_DB_USER=<user Neon>
-   KIWI_DB_PASSWORD=<password Neon>
-   DJANGO_SUPERUSER_USERNAME=<admin>
-   DJANGO_SUPERUSER_EMAIL=<email valid>
-   DJANGO_SUPERUSER_PASSWORD=<password admin>
-   ```
-
-5. Deploy dari folder `deploy/`. `--ha=false` wajib supaya hanya satu machine yang jalan. Dua machine akan menjalankan `migrate` bersamaan pada DB yang sama.
-
-   ```bash
-   fly deploy --ha=false
-   fly logs
-   ```
-
-6. Buka `https://kiwi-tcms-gallanpw.fly.dev` dan login. Lalu hapus password admin dari secret: `fly secrets unset DJANGO_SUPERUSER_PASSWORD`.
-
-Catatan:
-
-- Setiap kali machine bangun dari mati, `start.sh` menjalankan `migrate` lagi. Itu cepat bila skema sudah mutakhir, tetapi request pertama sesudah idle tetap lambat.
-- Upload (attachment) hilang saat machine dibuat ulang. Untuk upload permanen, buat volume (`fly volumes create`) dan mount ke `/Kiwi/uploads`.
-
-## Deploy ke PythonAnywhere (plan free)
-
-Berbeda dari Render dan Fly.io, PythonAnywhere tidak memakai Docker. Kode Kiwi dijalankan langsung dari `Kiwi/` dengan Python 3.12 atau 3.13 (Django 6.1 butuh minimal 3.12), database SQLite.
-
-Kenapa SQLite: plan free membatasi koneksi keluar ke daftar situs tertentu (Neon tidak bisa dipakai) dan tidak punya PostgreSQL. MySQL bawaan PythonAnywhere kemungkinan terlalu lama untuk Django 6.1 (minimal MariaDB 10.11 atau MySQL 8.4). Dengan plan berbayar, `kiwi_pa_settings.py` bisa diganti ke Neon.
-
-| File | Fungsi |
-|---|---|
-| `deploy/pythonanywhere/kiwi_pa_settings.py` | Settings profil `product`. Membaca `.env`, memakai SQLite di `data/`, `ALLOWED_HOSTS` dan `CSRF_TRUSTED_ORIGINS` dari `KIWI_HOSTNAME`. |
-| `deploy/pythonanywhere/wsgi.py` | Isi file WSGI di tab Web. Ganti `USERNAME`. |
-| `deploy/pythonanywhere/env.example` | Contoh `.env` di server (`SECRET_KEY`, `KIWI_HOSTNAME`). |
-| `deploy/pythonanywhere/build_static.sh` | Jalan di laptop. Mengumpulkan file static (hanya paket npm runtime) ke `data/kiwi-static.tar.gz`. |
-| `deploy/pythonanywhere/manage.sh` | Wrapper `manage.py` untuk Bash console PythonAnywhere. |
-
-Static dibangun di laptop karena bundle JS butuh Node dan pnpm. Paket `kiwitcms` di PyPI berhenti di versi 12.4, jadi tidak bisa dipakai.
-
-Di bawah, ganti `USERNAME` dengan username PythonAnywhere.
-
-### 1. Di laptop
-
-```bash
-# bundle JS sudah dibangun (Setup, langkah 3)
-deploy/pythonanywhere/build_static.sh     # hasil: data/kiwi-static.tar.gz (sekitar 30 MB)
-git push                                  # settings PythonAnywhere dan submodule Kiwi harus sudah ada di GitHub
-```
-
-### 2. Bash console PythonAnywhere
-
-Buka *Consoles → Bash*. Cek dulu versi Python dan SQLite. Django 6.1 butuh SQLite 3.37 atau lebih baru:
-
-```bash
-python3.12 -c "import sqlite3; print(sqlite3.sqlite_version)"
-```
-
-Lalu:
-
-```bash
-cd ~
-git clone https://github.com/gallanpw/kiwi-tcms.git
-cd kiwi-tcms
-
-# Kiwi: commit yang di-pin submodule, sama dengan bundle JS dari laptop
-git submodule update --init --depth 1
-
-# venv dan dependency (tanpa uWSGI). --no-cache-dir hemat kuota disk 512 MB.
-python3.12 -m venv .venv
-grep -v -i uwsgi Kiwi/requirements/base.txt | grep -v '^-r' > ~/kiwi-req.txt
-grep -v -i uwsgi Kiwi/requirements/tarballs.txt | grep -v '^#' | grep . >> ~/kiwi-req.txt
-.venv/bin/python -m pip install --no-cache-dir -r ~/kiwi-req.txt
-rm ~/kiwi-req.txt
-
-# konfigurasi
-cp deploy/pythonanywhere/env.example .env
-python3 -c "import secrets; print(secrets.token_urlsafe(50))"   # salin ke SECRET_KEY
-nano .env                                                        # isi SECRET_KEY dan USERNAME
-mkdir -p data
-```
-
-### 3. Upload static
-
-Tab *Files*, buka `/home/USERNAME/kiwi-tcms/data/`, klik *Upload a file*, pilih `data/kiwi-static.tar.gz`. Lalu di Bash console:
-
-```bash
-tar -C data -xzf data/kiwi-static.tar.gz && rm data/kiwi-static.tar.gz
-```
-
-### 4. Database dan admin
-
-```bash
-deploy/pythonanywhere/manage.sh migrate
-deploy/pythonanywhere/manage.sh refresh_permissions
-deploy/pythonanywhere/manage.sh set_domain USERNAME.pythonanywhere.com
-deploy/pythonanywhere/manage.sh createsuperuser
-```
-
-Untuk membawa data dari laptop, upload `data/db.sqlite3` ke `/home/USERNAME/kiwi-tcms/data/` (dari SQLite lokal, bukan PostgreSQL), lalu cukup jalankan `migrate` dan `set_domain`.
-
-### 5. Web app
-
-Tab *Web → Add a new web app → Manual configuration*, pilih Python yang sama dengan venv (3.12). Lalu isi:
-
-| Kolom | Nilai |
-|---|---|
-| Source code | `/home/USERNAME/kiwi-tcms` |
-| Virtualenv | `/home/USERNAME/kiwi-tcms/.venv` |
-| WSGI configuration file | ganti seluruh isinya dengan `deploy/pythonanywhere/wsgi.py`, `USERNAME` diganti |
-| Static files | URL `/static/`, Directory `/home/USERNAME/kiwi-tcms/data/static` |
-| Force HTTPS | Enabled |
-
-Klik *Reload*, lalu buka `https://USERNAME.pythonanywhere.com` dan login. Bila error, baca *Error log* di tab Web.
-
-Catatan:
-
-- Plan free: web app mati bila tidak diperpanjang. Klik *Run until 3 months from today* di tab Web sebelum kedaluwarsa.
-- Kuota disk 512 MB. Pemakaian: venv sekitar 110 MB, static sekitar 100 MB, source Kiwi sekitar 30 MB.
-- Plan free membatasi koneksi keluar ke daftar situs tertentu. Integrasi issue tracker (Jira, GitHub, Bugzilla, dan lain-lain) hanya jalan ke situs di daftar itu.
-- Download attachment belum teruji. Kiwi di luar `DEBUG` mengirim header `X-Accel-Redirect` ke lokasi `/ngx-uploads/` milik nginx upstream, dan PythonAnywhere tidak punya lokasi itu.
-- `kiwi_pa_settings.py` mematikan `SECURE_SSL_REDIRECT` (redirect HTTPS dikerjakan *Force HTTPS*) dan mengisi `SECURE_PROXY_SSL_HEADER` dengan `X-Forwarded-Proto`. Apakah PythonAnywhere mengirim header itu belum diverifikasi. Bila tidak, `CSRF_TRUSTED_ORIGINS` tetap membuat login jalan, tetapi URL absolut yang dibuat Django bisa berskema `http`.
-- `KIWI_REGISTRATION_ENABLED=False` di `.env` menutup pendaftaran publik. Defaultnya terbuka (dengan CAPTCHA).
-- Backup: unduh `data/db.sqlite3` dari tab *Files*.
-
-Memperbarui: `git pull && git submodule update --init --depth 1` di `~/kiwi-tcms`, ulangi langkah 1 dan 3 bila versi Kiwi atau bundle berubah (`pip install` ulang bila dependency berubah), jalankan `manage.sh migrate`, lalu *Reload*.
-
 ## Deploy ke Vercel + Neon
 
-Vercel menjalankan Kiwi sebagai satu Vercel Function (Python, WSGI) dari source di `Kiwi/`. Database PostgreSQL di Neon. Tidak ada Docker, nginx, atau uWSGI.
+Vercel menjalankan Kiwi sebagai satu Vercel Function (Python, WSGI) dari source di `Kiwi/`. Database PostgreSQL di Neon.
 
 | File | Fungsi |
 |---|---|
@@ -393,6 +209,29 @@ set -a; . ./.env.vercel; set +a
 
 Ini memakai settings Vercel yang sama dengan produksi. Jangan salah pakai `./run.sh`, yang membaca `.env` lokal.
 
+Untuk membawa data lokal (user, product, plan, case, run), lewati `createsuperuser` dan muat dump dari PostgreSQL lokal. Database Neon harus baru (hanya `migrate` dan `refresh_permissions`):
+
+```bash
+KIWI_DB=postgres ./run.sh dumpdata --natural-foreign --natural-primary \
+  --exclude contenttypes --exclude auth.permission --exclude admin.logentry \
+  --exclude sessions --indent 1 -o data/pg_dump.json
+
+set -a; . ./.env.vercel; set +a
+.venv/bin/python manage.py loaddata data/pg_dump.json
+.venv/bin/python manage.py shell -c "
+from django.apps import apps
+from django.core.management.color import no_style
+from django.db import connection
+with connection.cursor() as c:
+    for sql in connection.ops.sequence_reset_sql(no_style(), apps.get_models()):
+        c.execute(sql)
+"
+```
+
+`data/pg_dump.json` berisi hash password user lokal. Jangan di-commit (folder `data/` sudah di-ignore) dan ganti password `admin` setelah login pertama di Vercel. Jalankan `set_domain` di langkah 4 seperti biasa.
+
+Dump `.sql` dari `pg_dump` juga bisa dimuat dengan `psql`, tetapi hasilnya bergantung pada versi PostgreSQL asal dan tujuan, jadi jalur `loaddata` di atas lebih aman.
+
 ### 4. Vercel
 
 1. *Add New → Project*, impor repo GitHub ini. Biarkan *Root Directory* kosong. Submodule `Kiwi` ikut di-clone oleh Vercel.
@@ -402,7 +241,7 @@ Ini memakai settings Vercel yang sama dengan produksi. Jangan salah pakai `./run
 
 Catatan:
 
-- Belum diuji di Vercel. Yang sudah diuji lokal: `collectstatic`, `migrate`, `createsuperuser`, dan alur login (CSRF aktif) lewat `wsgi.py` pada PostgreSQL.
+- Build dan deploy di Vercel berhasil. Database Neon yang masih kosong membuat semua halaman dialihkan ke `/init-db/` sampai `migrate` dijalankan dari laptop (langkah 3). Jangan memakai tombol di halaman itu.
 - Bila `/static/...` 404 setelah deploy, pindahkan isi `static_src/` ke `public/static/` dan hapus `STATICFILES_DIRS` dari settings. Vercel menyajikan `public/` dari CDN.
 - Attachment tidak berfungsi: filesystem function read-only (hanya `/tmp`, sementara) dan body request dibatasi 4,5 MB.
 - Plan Hobby hanya untuk pemakaian non-komersial. Neon free tidur setelah 5 menit idle, jadi request pertama lebih lambat, ditambah cold start function.
@@ -440,10 +279,59 @@ Data diambil lewat MCP Zebrunner dan disimpan sebagai `scripts/zebrunner_<projec
 Menjalankan impor (aman diulang karena memakai `get_or_create`):
 
 ```bash
-./run.sh shell -c "exec(open('scripts/import_zebrunner_suite.py').read())"
+ZEBRUNNER_JSON=scripts/zebrunner_kpfree_suite.json \
+  ./run.sh shell -c "exec(open('scripts/import_zebrunner_suite.py').read())"
 ```
 
+Tanpa `ZEBRUNNER_JSON`, yang diimpor adalah `scripts/zebrunner_kpapi_suite.json`. Field `desc`, `post` (Teardown), dan `draft` (status PROPOSED) pada JSON bersifat opsional.
+
 Skrip mengasumsikan user `admin` sudah ada dan memakainya sebagai author semua test case.
+
+### Test run
+
+Skrip `scripts/import_zebrunner_runs.py` mengimpor test run beserta hasil eksekusinya. Impor suite harus dijalankan lebih dulu, karena test case dicari lewat Tag key Zebrunner.
+
+| Zebrunner | Kiwi |
+|---|---|
+| Test run | Test Run pada Test Plan yang berisi test case-nya (build `unspecified`) |
+| Configuration (group, option) | Property pada Test Run (`Environment: Iphone`) |
+| Description | Notes, ditambah link ke test run Zebrunner |
+| Test case dalam run | Test Execution |
+| Result status | Status eksekusi (tabel di bawah) |
+
+| Zebrunner | Kiwi |
+|---|---|
+| Untested | IDLE |
+| Passed | PASSED |
+| Failed | FAILED |
+| Blocked | BLOCKED |
+| Skipped | WAIVED |
+| Retest | RETEST (status baru, weight 0) |
+| Passed W/Note, Pass With Note, Passed with notes | PASSED WITH NOTE (status baru, weight 15) |
+
+Kiwi menghitung eksekusi berstatus `weight` 0 sebagai belum selesai, positif sebagai sukses, dan negatif sebagai gagal. Karena itu RETEST dibuat dengan weight 0 dan WAIVED (Skipped) ikut terhitung selesai.
+
+User Zebrunner (`productkaspin`) bukan user Kiwi, jadi manager, assignee, dan tested by diisi `admin`. Eksekusi `Untested` tidak punya assignee, sama seperti di Zebrunner. Data diambil lewat MCP Zebrunner dan disimpan di `scripts/zebrunner_runs.json` (di-ignore git):
+
+```json
+{
+  "base_url": "https://<host>.zebrunner.com",
+  "runs": [{
+    "product": "KPAPI", "id": 391, "title": "...", "description": "...",
+    "created": "2026-10-22T09:29:58Z",
+    "configurations": [["Environment", "Iphone"]],
+    "items": [["KPAPI-1", "Passed", 1]]
+  }]
+}
+```
+
+Elemen `items` berisi key test case, nama status Zebrunner, dan `1` bila ada assignee. Menjalankan impor (aman diulang; run dan eksekusi yang sudah ada tidak diubah):
+
+```bash
+./run.sh shell -c "exec(open('scripts/import_zebrunner_runs.py').read())"
+```
+
+Detail hasil (komentar, issue, lampiran, durasi) tidak diimpor.
 
 ## Memperbarui Kiwi
 

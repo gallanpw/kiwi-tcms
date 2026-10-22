@@ -7,7 +7,7 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 
 # collects runtime-only static files into data/kiwi-static.tar.gz
-deploy/pythonanywhere/build_static.sh
+deploy/vercel/build_static.sh
 
 rm -rf static_src
 mkdir static_src

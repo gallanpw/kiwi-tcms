@@ -1,4 +1,0 @@
-[uwsgi]
-; upstream default is one worker per CPU core, which counts the host's cores
-; (not the container's quota) and can exhaust a 512 MB Render instance
-processes = 2
