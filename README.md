@@ -16,10 +16,13 @@ Repo ini **tidak berisi kode Kiwi**. Kode upstream di-clone ke folder `Kiwi/` (d
 | `scripts/import_zebrunner_suite.py` | Mengimpor suite dan test case Zebrunner (format JSON) ke Kiwi. |
 | `.python-version`, `.node-version`, `.nvmrc` | Versi Python (3.14) dan Node (24). |
 | `data/` | DB SQLite dan upload. Dibuat otomatis, di-ignore git. Tidak dipakai untuk data PostgreSQL. |
+| `render.yaml`, `deploy/` | Deploy ke Render (app) dengan PostgreSQL di Neon. Lihat bagian [Deploy ke Render + Neon](#deploy-ke-render--neon). |
 
 ## Prasyarat
 
-- [uv](https://docs.astral.sh/uv/), Python 3.14 (`uv` bisa memasangnya)
+- Python 3.14 (satu-satunya versi yang sudah diuji) dan salah satu dari:
+  - [uv](https://docs.astral.sh/uv/) (bisa memasang Python sendiri), atau
+  - `pip` bawaan Python. Di Debian/Ubuntu pasang dulu `sudo apt install python3.14-venv`, kalau tidak `python3 -m venv` gagal dengan *ensurepip is not available*.
 - [fnm](https://github.com/Schniz/fnm) dengan Node 24, dan [pnpm](https://pnpm.io/) 11
 - Git
 
@@ -33,10 +36,16 @@ cd kiwi-tcms
 git clone --depth 1 https://github.com/kiwitcms/Kiwi.git
 
 # 2. Python: venv dan dependency (tanpa uWSGI, hanya untuk produksi dan butuh compile)
-uv venv --python 3.14 .venv
+#    Daftar dependency, sama untuk uv dan pip:
 grep -v -i uwsgi Kiwi/requirements/base.txt | grep -v '^-r' > /tmp/kiwi-req.txt
 grep -v -i uwsgi Kiwi/requirements/tarballs.txt | grep -v '^#' | grep . >> /tmp/kiwi-req.txt
+
+#    Pilih SATU: uv ...
+uv venv --python 3.14 .venv
 uv pip install --python .venv/bin/python -r /tmp/kiwi-req.txt
+#    ... atau pip
+python3.14 -m venv .venv
+.venv/bin/python -m pip install -r /tmp/kiwi-req.txt
 
 # 3. Frontend: build bundle JS
 fnm use
@@ -44,6 +53,8 @@ cp config/pnpm-workspace.yaml Kiwi/tcms/
 cd Kiwi/tcms && pnpm install && pnpm exec webpack && cd ../..
 
 # 4. Konfigurasi database (lihat bagian "Konfigurasi database")
+#    .env.example memilih postgres. Tanpa server dan driver PostgreSQL,
+#    ubah baris pertama .env menjadi KIWI_DB=sqlite
 cp .env.example .env
 
 # 5. Skema database dan akun admin
@@ -83,7 +94,7 @@ KIWI_DB_PORT=5432
 
 ### PostgreSQL lokal (podman)
 
-Driver: `uv pip install --python .venv/bin/python psycopg2-binary`. Lalu buat database dan role di container Postgres:
+Driver: `uv pip install --python .venv/bin/python psycopg2-binary`, atau dengan pip: `.venv/bin/python -m pip install psycopg2-binary`. Lalu buat database dan role di container Postgres:
 
 ```bash
 podman exec postgres-local psql -U postgres \
@@ -121,6 +132,8 @@ KIWI_DB=postgres ./run.sh sqlsequencereset auth management testcases testplans t
 
 Buka <http://127.0.0.1:8080> dan login dengan akun superuser yang dibuat tadi. Tanpa argumen, `./run.sh` menjalankan `runserver` di port 8000. Perintah lain: `./run.sh migrate`, `./run.sh shell`.
 
+Selalu jalankan lewat `./run.sh`, bukan `python Kiwi/manage.py` langsung. Skrip itu memakai `.venv/bin/python` (tidak perlu `source .venv/bin/activate`, dan tidak perlu `uv`) serta mengatur `PYTHONPATH` dan `DJANGO_SETTINGS_MODULE`. Tanpa itu Django memakai settings upstream (MariaDB) dan gagal konek. `run.sh` butuh bash, jadi di Windows pakai WSL.
+
 Ini setup **development** (`DEBUG=True`), bukan untuk produksi.
 
 ## Penyimpanan data
@@ -141,6 +154,35 @@ Backup SQLite cukup dengan menyalin file itu. Untuk PostgreSQL pakai `podman exe
   - `nodeLinker: hoisted` untuk `node_modules` datar
   - `autoInstallPeers: true` untuk memasang peer dependency
   - `overrides` untuk versi yang sama dengan `overrides` di `Kiwi/tcms/package.json`, karena pnpm 11 tidak membaca `overrides` dari `package.json`
+
+## Deploy ke Render + Neon
+
+App jalan di Render dari image resmi `kiwitcms/kiwi` (bukan dari folder `Kiwi/`). Database PostgreSQL di Neon.
+
+File di `deploy/` menyesuaikan image untuk Render. Render menghentikan TLS dan meneruskan HTTP biasa, sedangkan image asli hanya melayani HTTPS di 8443 dan hanya me-redirect di 8080 (redirect loop di Render).
+
+| File | Fungsi |
+|---|---|
+| `nginx.conf` | Melayani HTTP di 8080, plus `/healthz` yang dijawab nginx tanpa menyentuh DB (supaya Neon bisa tidur). |
+| `tcms_settings_dir/50-render.py` | `SECRET_KEY` dari env (key upstream publik) dan `SECURE_PROXY_SSL_HEADER` agar redirect HTTPS Django tidak loop. |
+| `uwsgi.override` | 2 worker. Default upstream satu worker per core host, bisa melebihi RAM 512 MB. |
+| `start.sh` | `migrate`, `refresh_permissions`, buat admin dari env, set domain, lalu jalankan `/httpd-foreground`. |
+
+Langkah:
+
+1. **Neon:** buat project di region `aws-ap-southeast-1` (Singapore). Di dialog *Connect*, **matikan** *Connection pooling* agar host tanpa `-pooler`. Migrasi Django tidak cocok dengan pooler.
+2. **Render:** *New → Blueprint*, pilih repo ini. Isi variabel `sync: false` dari `render.yaml`:
+   - `KIWI_DB_HOST`, `KIWI_DB_NAME`, `KIWI_DB_USER`, `KIWI_DB_PASSWORD`: dari connection string Neon
+   - `DJANGO_SUPERUSER_USERNAME`, `DJANGO_SUPERUSER_EMAIL`, `DJANGO_SUPERUSER_PASSWORD`: admin pertama
+3. Setelah deploy pertama berhasil dan login jalan, hapus `DJANGO_SUPERUSER_PASSWORD` dari env Render.
+
+Catatan:
+
+- Image di-pull dengan tag `latest` (Docker Hub hanya menyediakan tag itu). Untuk build yang bisa diulang, ganti `KIWI_IMAGE` di `deploy/Dockerfile` dengan digest `kiwitcms/kiwi@sha256:...`.
+- `nginx.conf` adalah salinan upstream 16.6 yang diubah. Cek ulang diff-nya saat memperbarui image.
+- Plan `free`: tidur setelah 15 menit idle dan tidak ada disk, jadi file upload (attachment) hilang tiap redeploy. Untuk upload permanen, pakai plan berbayar dengan disk di `/Kiwi/uploads`.
+- Rate limit nginx untuk `/accounts/` memakai IP klien. Di belakang proxy Render, semua klien tampak berasal dari IP proxy, jadi batas 10 req/detik berlaku bersama.
+- Neon free tier tidur setelah 5 menit tanpa koneksi. Request pertama sesudahnya lebih lambat sekitar satu detik.
 
 ## Impor data dari Zebrunner
 
