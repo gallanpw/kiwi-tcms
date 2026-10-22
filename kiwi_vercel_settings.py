@@ -2,6 +2,8 @@
 import os
 import pathlib
 
+import django.core.management
+from django.utils.functional import Promise
 from tcms.settings.product import *  # noqa: F403
 
 BASE = pathlib.Path(__file__).resolve().parent
@@ -28,3 +30,23 @@ STATICFILES_DIRS = [str(BASE / "static_src")]
 
 # The function filesystem is read-only except /tmp: attachments do not persist
 MEDIA_ROOT = "/tmp/kiwi-uploads"
+
+
+# Vercel's build-time reader (vc_django_settings.py) dumps every setting to JSON
+# before the app registry is ready, which fails on upstream's lazy gettext and
+# reverse_lazy values. Blank them for that one process only (it replaces
+# execute_from_command_line with a stub named _stop); the function and
+# collectstatic still load the real settings.
+def _without_lazy(value):
+    if isinstance(value, Promise):
+        return ""
+    if isinstance(value, (list, tuple)):
+        return type(value)(_without_lazy(v) for v in value)
+    if isinstance(value, dict):
+        return {k: _without_lazy(v) for k, v in value.items()}
+    return value
+
+
+if django.core.management.execute_from_command_line.__name__ == "_stop":
+    for _name in [n for n in dir() if n.isupper()]:
+        globals()[_name] = _without_lazy(globals()[_name])
