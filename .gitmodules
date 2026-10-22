@@ -1,0 +1,4 @@
+[submodule "Kiwi"]
+	path = Kiwi
+	url = https://github.com/kiwitcms/Kiwi.git
+	ignore = dirty

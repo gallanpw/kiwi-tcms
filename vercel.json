@@ -1,0 +1,13 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "regions": ["sin1"],
+  "functions": {
+    "wsgi.py": {
+      "excludeFiles": "{static_src/**,staticfiles/**,Kiwi/.git/**,Kiwi/docs/**,Kiwi/tests/**}"
+    }
+  },
+  "rewrites": [
+    { "source": "/favicon.ico", "destination": "/static/images/favicon.ico" },
+    { "source": "/robots.txt", "destination": "/static/robots.txt" }
+  ]
+}

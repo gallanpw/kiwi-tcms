@@ -1,0 +1,55 @@
+{
+    "name": "datatables.net-bs",
+    "description": "DataTables with styling for [Bootstrap](https://getbootstrap.com/docs/3.3/)",
+    "main": "./js/dataTables.bootstrap.js",
+    "module": "./js/dataTables.bootstrap.mjs",
+    "style": "./css/dataTables.bootstrap.css",
+    "types": "./types/dataTables.bootstrap.d.ts",
+    "version": "3.1.4",
+    "files": [
+        "js",
+        "css",
+        "types"
+    ],
+    "keywords": [
+        "Bootstrap",
+        "Datatables",
+        "table",
+        "filter",
+        "sort"
+    ],
+    "dependencies": {
+        "datatables.net": "3.1.4"
+    },
+    "author": {
+        "name": "SpryMedia Ltd",
+        "url": "http://datatables.net"
+    },
+    "homepage": "https://datatables.net",
+    "bugs": "https://datatables.net/forums",
+    "license": "MIT",
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/DataTables/DataTablesSrc.git"
+    },
+    "exports": {
+        ".": {
+            "types": "./types/dataTables.bootstrap.d.ts",
+            "style": "./css/dataTables.bootstrap.css",
+            "import": "./js/dataTables.bootstrap.mjs",
+            "require": "./js/dataTables.bootstrap.js",
+            "default": "./js/dataTables.bootstrap.mjs"
+        },
+        "./js/*": "./js/*",
+        "./css": {
+            "types": "./types/css.d.ts",
+            "default": "./css/dataTables.bootstrap.css"
+        },
+        "./css/*": {
+            "types": "./types/css.d.ts",
+            "default": "./css/*"
+        },
+        "./package.json": "./package.json"
+    },
+    "sideEffects": true
+}

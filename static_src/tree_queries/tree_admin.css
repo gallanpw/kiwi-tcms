@@ -1,0 +1,211 @@
+.box {
+  white-space: nowrap;
+  position: relative;
+  margin: -8px;
+  overflow: hidden;
+}
+
+.box-drawing {
+  position: absolute;
+  display: inline-block;
+  font-family: monospace;
+  font-size: 28px;
+  line-height: 1.2;
+  font-weight: normal;
+}
+
+.box-drawing i {
+  display: inline-block;
+  font-style: normal;
+  width: 30px;
+}
+
+.box-drawing i.l::after {
+  content: "\2502";
+}
+
+.box-drawing i.a::after {
+  content: "\251c";
+}
+
+.box-text {
+  padding: 8px;
+}
+
+.box-text.ellipsize {
+  max-width: min(50vw, 70ch);
+  text-overflow: ellipsis;
+  overflow: hidden;
+}
+
+.field-collapse_column {
+  position: relative;
+  width: 1rem;
+  padding: 0 !important;
+}
+
+.collapse-toggle {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+
+  display: inline-block;
+  transition: 0.1s transform;
+  transform: rotate(0deg) translateY(6px);
+  transform-origin: 50% 50%;
+
+  cursor: pointer;
+}
+
+.collapse-toggle.collapsed {
+  transform: rotate(-45deg) translateY(2px);
+}
+
+.collapse-toggle::after {
+  content: "\25E2";
+  font-size: 1rem;
+}
+
+.collapse-hide {
+  display: none !important;
+}
+
+.move-status {
+  background: var(--selected-row);
+  padding: 8px 16px;
+  cursor: pointer;
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  border: 1px solid var(--hairline-color);
+  z-index: 25; /* .nav-sidebar uses 15 and 20 */
+}
+
+.move-status .confirm-root-move {
+  margin-left: 10px;
+  padding: 2px 6px;
+  background: var(--success-fg, #28a745);
+  color: white;
+  border: none;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: inherit;
+}
+
+.move-status .confirm-root-move:hover {
+  background: var(--success-fg, #218838);
+}
+
+.move-status .cancel-move {
+  margin-left: 10px;
+  padding: 2px 6px;
+  background: none;
+  color: var(--link-fg);
+  border: 1px solid var(--hairline-color);
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: inherit;
+}
+
+.move-status .cancel-move:hover {
+  background: var(--hairline-color);
+}
+
+.field-move_column {
+  padding-top: 0;
+  padding-bottom: 0;
+  vertical-align: middle;
+}
+
+.move-controls {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+
+.move-cut,
+.move-to-root {
+  appearance: none;
+  cursor: pointer;
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--link-fg);
+  display: inline-grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+}
+
+/* Icon styles using SVGs from Google Material Icons
+   https://github.com/google/material-design-icons
+   Licensed under Apache License 2.0 */
+
+.move-cut .tree-icon::before {
+  content: "";
+  display: block;
+  width: 24px;
+  height: 24px;
+  /* content_cut icon */
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='currentColor'%3E%3Cpath d='M9.64 7.64c.23-.5.36-1.05.36-1.64 0-2.21-1.79-4-4-4S2 3.79 2 6s1.79 4 4 4c.59 0 1.14-.13 1.64-.36L10 12l-2.36 2.36C7.14 14.13 6.59 14 6 14c-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4c0-.59-.13-1.14-.36-1.64L12 14l7 7h3v-1L9.64 7.64zM6 8c-1.1 0-2-.89-2-2s.89-2 2-2 2 .89 2 2-.89 2-2 2zm0 12c-1.1 0-2-.89-2-2s.89-2 2-2 2 .89 2 2-.89 2-2 2zm6-7.5c-.28 0-.5-.22-.5-.5s.22-.5.5-.5.5.22.5.5-.22.5-.5.5zM19 3l-6 6 2 2 7-7V3z'/%3E%3C/svg%3E");
+}
+
+.move-to-root .tree-icon::before {
+  content: "";
+  display: block;
+  width: 24px;
+  height: 24px;
+  /* vertical_align_top icon */
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='currentColor'%3E%3Cpath d='M8 11h3v10h2V11h3l-4-4-4 4zM4 3v2h16V3H4z'/%3E%3C/svg%3E");
+}
+
+.move-to-root {
+  color: var(--success-fg, #28a745);
+}
+
+.move-paste {
+  display: none;
+  max-width: 6ch;
+  height: 28px;
+}
+
+/* Show paste dropdowns when in regular move mode */
+body[data-move="regular"] .move-paste {
+  display: revert;
+}
+
+/* Hide paste dropdown on the selected row (can't move relative to itself) */
+body[data-move] .move-selected .move-paste {
+  display: none;
+}
+
+#changelist tr[data-tree-depth] {
+  --_f: 3%;
+  background: color-mix(in oklab, var(--body-fg) var(--_f), var(--body-bg));
+}
+#changelist tr[data-tree-depth]:nth-child(2n) {
+  --_f: 0%;
+}
+#changelist tr[data-tree-depth="0"] {
+  --_f: 18%;
+}
+#changelist tr[data-tree-depth="0"]:nth-child(2n) {
+  --_f: 15%;
+}
+#changelist tr[data-tree-depth="1"] {
+  --_f: 9%;
+}
+#changelist tr[data-tree-depth="1"]:nth-child(2n) {
+  --_f: 6%;
+}
+
+#changelist tbody tr.move-selected {
+  background: var(--selected-row);
+}
+
+#changelist tbody tr.move-highlight {
+  background: var(--message-success-bg);
+}

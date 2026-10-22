@@ -1,13 +1,14 @@
 .venv/
-data/
+/data/
 __pycache__/
 .claude/
-
-# clone upstream Kiwi TCMS (lihat README, bagian Setup)
-Kiwi/
 
 # data test case hasil ekspor Zebrunner (data internal, jangan dipublikasikan)
 scripts/zebrunner_*.json
 
 # konfigurasi lokal (berisi password)
 .env
+
+# Vercel: hasil collectstatic saat build, dan env var untuk migrasi dari laptop
+/staticfiles/
+.env.vercel

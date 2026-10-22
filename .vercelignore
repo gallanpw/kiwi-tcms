@@ -1,0 +1,11 @@
+.venv
+.git
+data
+scripts
+config
+deploy
+Kiwi/tcms/node_modules
+Kiwi/.git
+.env
+.env.*
+__pycache__

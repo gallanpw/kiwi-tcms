@@ -1,0 +1,40 @@
+{
+    "name": "@types/d3-queue",
+    "version": "3.0.10",
+    "description": "TypeScript definitions for d3-queue",
+    "homepage": "https://github.com/DefinitelyTyped/DefinitelyTyped/tree/master/types/d3-queue",
+    "license": "MIT",
+    "contributors": [
+        {
+            "name": "Tom Wanzek",
+            "githubUsername": "tomwanzek",
+            "url": "https://github.com/tomwanzek"
+        },
+        {
+            "name": "Alex Ford",
+            "githubUsername": "gustavderdrache",
+            "url": "https://github.com/gustavderdrache"
+        },
+        {
+            "name": "Boris Yankov",
+            "githubUsername": "borisyankov",
+            "url": "https://github.com/borisyankov"
+        },
+        {
+            "name": "denisname",
+            "githubUsername": "denisname",
+            "url": "https://github.com/denisname"
+        }
+    ],
+    "main": "",
+    "types": "index.d.ts",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/DefinitelyTyped/DefinitelyTyped.git",
+        "directory": "types/d3-queue"
+    },
+    "scripts": {},
+    "dependencies": {},
+    "typesPublisherContentHash": "0e9da2bab030ba07f7d5aa2104eec620362b0f4654e39aefcf4a3bd292b5f29f",
+    "typeScriptVersion": "4.5"
+}
