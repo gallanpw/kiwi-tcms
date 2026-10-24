@@ -41,12 +41,14 @@ git submodule update --init --depth 1
 grep -v -i uwsgi Kiwi/requirements/base.txt | grep -v '^-r' > /tmp/kiwi-req.txt
 grep -v -i uwsgi Kiwi/requirements/tarballs.txt | grep -v '^#' | grep . >> /tmp/kiwi-req.txt
 
-#    Pilih SATU: uv ...
-uv venv --python 3.14 .venv
-uv pip install --python .venv/bin/python -r /tmp/kiwi-req.txt
-#    ... atau pip
+#    Pilih SATU: pip ...
 python3.14 -m venv .venv
 .venv/bin/python -m pip install -r /tmp/kiwi-req.txt
+.venv/bin/python -m pip freeze > requirements-freeze.txt   # opsional: catat versi terpasang
+#    ... atau uv
+uv venv --python 3.14 .venv
+uv pip install --python .venv/bin/python -r /tmp/kiwi-req.txt
+uv pip freeze --python .venv/bin/python > requirements-freeze.txt   # opsional
 
 # 3. Frontend: build bundle JS
 fnm use
@@ -95,7 +97,7 @@ KIWI_DB_PORT=5432
 
 ### PostgreSQL lokal (podman)
 
-Driver: `uv pip install --python .venv/bin/python psycopg2-binary`, atau dengan pip: `.venv/bin/python -m pip install psycopg2-binary`. Lalu buat database dan role di container Postgres:
+Driver: `.venv/bin/python -m pip install psycopg2-binary`, atau dengan uv: `uv pip install --python .venv/bin/python psycopg2-binary`. Lalu buat database dan role di container Postgres:
 
 ```bash
 podman exec postgres-local psql -U postgres \
@@ -200,6 +202,9 @@ KIWI_DB_PASSWORD=<password Neon>
 Pasang driver di venv lokal, muat env, lalu migrasi:
 
 ```bash
+# Pilih SATU: pip ...
+.venv/bin/python -m pip install "psycopg[binary]==3.3.6"
+# ... atau uv
 uv pip install --python .venv/bin/python "psycopg[binary]==3.3.6"
 set -a; . ./.env.vercel; set +a
 .venv/bin/python manage.py migrate
