@@ -1,6 +1,6 @@
 # kiwi-tcms
 
-Setup lokal [Kiwi TCMS](https://github.com/kiwitcms/Kiwi) (test case management system open source) untuk laptop, memakai `uv`, `pnpm`, dan SQLite atau PostgreSQL (dipilih lewat `.env`). Tujuannya mempelajari model data dan alur kerja TCM, serta membandingkannya dengan Zebrunner.
+Setup lokal [Kiwi TCMS](https://github.com/kiwitcms/Kiwi) (test case management system open source) untuk laptop, memakai `pip` (opsional `uv`), `npm` (opsional `pnpm`), dan SQLite atau PostgreSQL (dipilih lewat `.env`). Tujuannya mempelajari model data dan alur kerja TCM, serta membandingkannya dengan Zebrunner.
 
 Repo ini **tidak menyalin kode Kiwi**. Kode upstream ada di folder `Kiwi/` sebagai git submodule yang di-pin ke satu commit (dibutuhkan Vercel untuk mengambil kode yang sama). Repo ini hanya menyimpan konfigurasi, skrip bantu, dan dokumentasi.
 
@@ -21,10 +21,10 @@ Repo ini **tidak menyalin kode Kiwi**. Kode upstream ada di folder `Kiwi/` sebag
 
 ## Prasyarat
 
-- Python 3.14 (satu-satunya versi yang sudah diuji) dan salah satu dari:
-  - [uv](https://docs.astral.sh/uv/) (bisa memasang Python sendiri), atau
-  - `pip` bawaan Python. Di Debian/Ubuntu pasang dulu `sudo apt install python3.14-venv`, kalau tidak `python3 -m venv` gagal dengan *ensurepip is not available*.
-- [fnm](https://github.com/Schniz/fnm) dengan Node 24, dan [pnpm](https://pnpm.io/) 11
+- Python 3.14 (satu-satunya versi yang sudah diuji) dengan `pip` bawaan Python (cara utama). Di Debian/Ubuntu pasang dulu `sudo apt install python3.14-venv`, kalau tidak `python3 -m venv` gagal dengan *ensurepip is not available*.
+- Opsional: [uv](https://docs.astral.sh/uv/) sebagai alternatif pip (bisa memasang Python sendiri). Tidak wajib.
+- Node 24 (lewat [fnm](https://github.com/Schniz/fnm) atau pasang sendiri) dengan `npm` bawaan Node (cara utama)
+- Opsional: [pnpm](https://pnpm.io/) 11 sebagai alternatif npm. Tidak wajib.
 - Git
 
 ## Setup
@@ -37,20 +37,24 @@ cd kiwi-tcms
 git submodule update --init --depth 1
 
 # 2. Python: venv dan dependency (tanpa uWSGI, hanya untuk produksi dan butuh compile)
-#    Daftar dependency, sama untuk uv dan pip:
+#    Daftar dependency, sama untuk pip dan uv:
 grep -v -i uwsgi Kiwi/requirements/base.txt | grep -v '^-r' > /tmp/kiwi-req.txt
 grep -v -i uwsgi Kiwi/requirements/tarballs.txt | grep -v '^#' | grep . >> /tmp/kiwi-req.txt
 
-#    Pilih SATU: pip ...
+#    Cara utama: pip
 python3.14 -m venv .venv
 .venv/bin/python -m pip install -r /tmp/kiwi-req.txt
 .venv/bin/python -m pip freeze > requirements-freeze.txt   # opsional: catat versi terpasang
-#    ... atau uv
+#    Opsional, alternatif: uv (tidak wajib)
 uv venv --python 3.14 .venv
 uv pip install --python .venv/bin/python -r /tmp/kiwi-req.txt
 uv pip freeze --python .venv/bin/python > requirements-freeze.txt   # opsional
 
 # 3. Frontend: build bundle JS
+#    Cara utama: npm (bawaan Node 24; `fnm use` hanya jika memakai fnm)
+fnm use
+cd Kiwi/tcms && npm install && npx webpack && cd ../..
+#    Opsional, alternatif: pnpm (tidak wajib, butuh config/pnpm-workspace.yaml)
 fnm use
 cp config/pnpm-workspace.yaml Kiwi/tcms/
 cd Kiwi/tcms && pnpm install && pnpm exec webpack && cd ../..
@@ -95,9 +99,11 @@ KIWI_DB_PORT=5432
 - Nilai `KIWI_DB` selain `sqlite` atau `postgres` menghasilkan `ValueError`.
 - `.env` berisi password dan di-ignore git. Hanya `.env.example` yang di-commit.
 
-### PostgreSQL lokal (podman)
+### PostgreSQL lokal (podman atau docker)
 
-Driver: `.venv/bin/python -m pip install psycopg2-binary`, atau dengan uv: `uv pip install --python .venv/bin/python psycopg2-binary`. Lalu buat database dan role di container Postgres:
+Perintah `podman` di bagian ini dan di bawahnya bisa diganti `docker` dengan argumen yang sama (misalnya `docker exec postgres-local psql ...`). Container `postgres-local` harus sudah berjalan.
+
+Driver: `.venv/bin/python -m pip install psycopg2-binary`. Opsional dengan uv: `uv pip install --python .venv/bin/python psycopg2-binary`. Lalu buat database dan role di container Postgres:
 
 ```bash
 podman exec postgres-local psql -U postgres \
@@ -202,9 +208,9 @@ KIWI_DB_PASSWORD=<password Neon>
 Pasang driver di venv lokal, muat env, lalu migrasi:
 
 ```bash
-# Pilih SATU: pip ...
+# Cara utama: pip
 .venv/bin/python -m pip install "psycopg[binary]==3.3.6"
-# ... atau uv
+# Opsional, alternatif: uv
 uv pip install --python .venv/bin/python "psycopg[binary]==3.3.6"
 set -a; . ./.env.vercel; set +a
 .venv/bin/python manage.py migrate
