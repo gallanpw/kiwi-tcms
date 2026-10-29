@@ -12,6 +12,7 @@ Repo ini **tidak menyalin kode Kiwi**. Kode upstream ada di folder `Kiwi/` sebag
 | `.env.example` | Contoh `.env`. Salin ke `.env` dan sesuaikan. |
 | `.env` | Konfigurasi lokal (pilihan DB dan kredensial). Dibuat sendiri, di-ignore git. |
 | `run.sh` | Wrapper `manage.py` (mengatur `PYTHONPATH`, `DJANGO_SETTINGS_MODULE`, memakai `.venv`). |
+| `run.ps1` | Padanan `run.sh` untuk Windows PowerShell. |
 | `config/pnpm-workspace.yaml` | Konfigurasi pnpm untuk frontend Kiwi. Disalin ke `Kiwi/tcms/` saat setup. |
 | `scripts/import_zebrunner_suite.py` | Mengimpor suite dan test case Zebrunner (format JSON) ke Kiwi. |
 | `scripts/import_zebrunner_runs.py` | Mengimpor test run Zebrunner beserta hasil eksekusinya ke Kiwi. |
@@ -69,6 +70,44 @@ mkdir -p data
 ./run.sh migrate
 ./run.sh createsuperuser
 ```
+
+## Setup di Windows
+
+Cara termudah: pakai WSL (Ubuntu), lalu ikuti bagian [Setup](#setup) di atas apa adanya. Kalau memakai PowerShell langsung, `grep`, `/tmp`, `.venv/bin/` dan `run.sh` tidak tersedia, jadi pakai langkah di bawah. Langkah 1 (submodule) dan langkah 3 (`npm install`, `npx webpack`) sama dengan bagian Setup.
+
+Prasyarat: Python 3.14 (dari python.org atau `winget install Python.Python.3.14`), Node 24, dan Git. Pastikan `python` dan `npm` ada di PATH.
+
+```powershell
+git clone https://github.com/gallanpw/kiwi-tcms.git
+cd kiwi-tcms
+
+# 1. Kode upstream Kiwi
+git submodule update --init --depth 1
+
+# 2. Python: venv dan dependency (tanpa uWSGI)
+$req = Join-Path $env:TEMP 'kiwi-req.txt'
+Get-Content Kiwi\requirements\base.txt |
+  Where-Object { $_ -notmatch 'uwsgi' -and $_ -notmatch '^-r' } | Set-Content $req
+Get-Content Kiwi\requirements\tarballs.txt |
+  Where-Object { $_ -notmatch 'uwsgi' -and $_ -notmatch '^#' -and $_.Trim() } | Add-Content $req
+python -m venv .venv
+.venv\Scripts\python -m pip install -r $req
+
+# 3. Frontend
+cd Kiwi\tcms; npm install; npx webpack; cd ..\..
+
+# 4. Konfigurasi database (ubah KIWI_DB=sqlite di .env kalau tanpa PostgreSQL)
+Copy-Item .env.example .env
+
+# 5. Skema database dan akun admin
+New-Item -ItemType Directory -Force data | Out-Null
+.\run.ps1 migrate
+.\run.ps1 createsuperuser
+```
+
+Jika PowerShell menolak menjalankan `run.ps1` (*running scripts is disabled*), jalankan sekali `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`.
+
+Setelah itu pakai `.\run.ps1` sebagai ganti `./run.sh`, misalnya `.\run.ps1 runserver 127.0.0.1:8080`. Env var diatur dengan `$env:KIWI_DB = 'sqlite'` sebelum memanggil `.\run.ps1`.
 
 ## Konfigurasi database
 
@@ -141,7 +180,7 @@ KIWI_DB=postgres ./run.sh sqlsequencereset auth management testcases testplans t
 
 Buka <http://127.0.0.1:8080> dan login dengan akun superuser yang dibuat tadi. Tanpa argumen, `./run.sh` menjalankan `runserver` di port 8000. Perintah lain: `./run.sh migrate`, `./run.sh shell`.
 
-Selalu jalankan lewat `./run.sh`, bukan `python Kiwi/manage.py` langsung. Skrip itu memakai `.venv/bin/python` (tidak perlu `source .venv/bin/activate`, dan tidak perlu `uv`) serta mengatur `PYTHONPATH` dan `DJANGO_SETTINGS_MODULE`. Tanpa itu Django memakai settings upstream (MariaDB) dan gagal konek. `run.sh` butuh bash, jadi di Windows pakai WSL.
+Selalu jalankan lewat `./run.sh`, bukan `python Kiwi/manage.py` langsung. Skrip itu memakai `.venv/bin/python` (tidak perlu `source .venv/bin/activate`, dan tidak perlu `uv`) serta mengatur `PYTHONPATH` dan `DJANGO_SETTINGS_MODULE`. Tanpa itu Django memakai settings upstream (MariaDB) dan gagal konek. `run.sh` butuh bash. Di Windows pakai `run.ps1` (lihat [Setup di Windows](#setup-di-windows)) atau WSL.
 
 Ini setup **development** (`DEBUG=True`), bukan untuk produksi.
 

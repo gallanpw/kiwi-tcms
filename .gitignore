@@ -3,6 +3,7 @@ requirements-freeze.txt
 /data/
 __pycache__/
 .claude/
+.DS_Store
 
 # data test case hasil ekspor Zebrunner (data internal, jangan dipublikasikan)
 scripts/zebrunner_*.json
