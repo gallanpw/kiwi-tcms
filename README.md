@@ -75,7 +75,22 @@ mkdir -p data
 
 Cara termudah: pakai WSL (Ubuntu), lalu ikuti bagian [Setup](#setup) di atas apa adanya. Kalau memakai PowerShell langsung, `grep`, `/tmp`, `.venv/bin/` dan `run.sh` tidak tersedia, jadi pakai langkah di bawah. Langkah 1 (submodule) dan langkah 3 (`npm install`, `npx webpack`) sama dengan bagian Setup.
 
-Prasyarat: Python 3.14 (dari python.org atau `winget install Python.Python.3.14`), Node 24, dan Git. Pastikan `python` dan `npm` ada di PATH.
+Prasyarat: Python 3.14, Node 24, dan Git. Pastikan `python` dan `npm` ada di PATH. Install Python lewat winget:
+
+```powershell
+winget install --id Python.Python.3.14 --exact --scope user --source winget
+```
+
+Untuk `KIWI_DB=postgres`, install PostgreSQL langsung di Windows (installer resmi, tanpa podman/docker). Catat password user `postgres` saat instalasi. Lalu buat database dan role `kiwi` lewat `psql` (ada di `C:\Program Files\PostgreSQL\<versi>\bin`, tambahkan ke PATH atau panggil dengan path penuh):
+
+```powershell
+psql -U postgres -h localhost `
+  -c "CREATE DATABASE kiwi;" `
+  -c "CREATE ROLE kiwi LOGIN PASSWORD 'kiwi';" `
+  -c "ALTER DATABASE kiwi OWNER TO kiwi;"
+```
+
+Nilai di `.env` (`KIWI_DB_*`) harus cocok dengan role ini. Tanpa PostgreSQL, pakai `KIWI_DB=sqlite`.
 
 ```powershell
 git clone https://github.com/gallanpw/kiwi-tcms.git
@@ -98,16 +113,18 @@ cd Kiwi\tcms; npm install; npx webpack; cd ..\..
 
 # 4. Konfigurasi database (ubah KIWI_DB=sqlite di .env kalau tanpa PostgreSQL)
 Copy-Item .env.example .env
+#    Hanya untuk KIWI_DB=postgres: driver PostgreSQL
+.\.venv\Scripts\python.exe -m pip install psycopg2-binary
 
 # 5. Skema database dan akun admin
 New-Item -ItemType Directory -Force data | Out-Null
-.\run.ps1 migrate
-.\run.ps1 createsuperuser
+.\run.ps1 migrate --noinput
+.\run.ps1 createsuperuser --verbosity 1
 ```
 
-Jika PowerShell menolak menjalankan `run.ps1` (*running scripts is disabled*), jalankan sekali `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`.
+Jika PowerShell menolak menjalankan `run.ps1` di langkah 5 (*running scripts is disabled*), jalankan sekali `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`, lalu ulangi langkah 5.
 
-Setelah itu pakai `.\run.ps1` sebagai ganti `./run.sh`, misalnya `.\run.ps1 runserver 127.0.0.1:8080`. Env var diatur dengan `$env:KIWI_DB = 'sqlite'` sebelum memanggil `.\run.ps1`.
+Seterusnya pakai `.\run.ps1` sebagai ganti `./run.sh`, misalnya `.\run.ps1 runserver 127.0.0.1:8080`. Env var diatur dengan `$env:KIWI_DB = 'sqlite'` sebelum memanggil `.\run.ps1`.
 
 ## Konfigurasi database
 
@@ -138,11 +155,50 @@ KIWI_DB_PORT=5432
 - Nilai `KIWI_DB` selain `sqlite` atau `postgres` menghasilkan `ValueError`.
 - `.env` berisi password dan di-ignore git. Hanya `.env.example` yang di-commit.
 
-### PostgreSQL lokal (podman atau docker)
+### Driver PostgreSQL
 
-Perintah `podman` di bagian ini dan di bawahnya bisa diganti `docker` dengan argumen yang sama (misalnya `docker exec postgres-local psql ...`). Container `postgres-local` harus sudah berjalan.
+Wajib untuk `KIWI_DB=postgres`, apa pun cara menjalankan PostgreSQL-nya:
 
-Driver: `.venv/bin/python -m pip install psycopg2-binary`. Opsional dengan uv: `uv pip install --python .venv/bin/python psycopg2-binary`. Lalu buat database dan role di container Postgres:
+```bash
+.venv/bin/python -m pip install psycopg2-binary
+```
+
+Windows: `.\.venv\Scripts\python.exe -m pip install psycopg2-binary`. Opsional dengan uv: `uv pip install --python .venv/bin/python psycopg2-binary`. Paket `-binary` membawa `libpq` sendiri, jadi tidak butuh `pg_config`. Jangan pasang `psycopg2` tanpa `-binary`.
+
+### PostgreSQL native (Linux dan Mac)
+
+Install PostgreSQL langsung di mesin, tanpa container. Untuk Windows, lihat [Setup di Windows](#setup-di-windows).
+
+Debian/Ubuntu:
+
+```bash
+sudo apt install postgresql
+sudo -u postgres psql \
+  -c "CREATE DATABASE kiwi;" \
+  -c "CREATE ROLE kiwi LOGIN PASSWORD 'kiwi';" \
+  -c "ALTER DATABASE kiwi OWNER TO kiwi;"
+KIWI_DB=postgres ./run.sh migrate
+```
+
+Mac (Homebrew):
+
+```bash
+brew install postgresql@17
+brew services start postgresql@17
+psql postgres \
+  -c "CREATE DATABASE kiwi;" \
+  -c "CREATE ROLE kiwi LOGIN PASSWORD 'kiwi';" \
+  -c "ALTER DATABASE kiwi OWNER TO kiwi;"
+KIWI_DB=postgres ./run.sh migrate
+```
+
+- Di Mac, superuser-nya adalah user login Mac, bukan `postgres`. Versi `@17` hanya contoh, sesuaikan dengan hasil `brew search postgresql`. Kalau `psql` tidak ditemukan, tambahkan `$(brew --prefix postgresql@17)/bin` ke `PATH`.
+- Nilai `KIWI_DB_*` di `.env` harus cocok dengan role ini (default `.env.example` sudah cocok).
+- Cek service jalan: `pg_isready -h localhost -p 5432`.
+
+### PostgreSQL di container (opsional, podman atau docker)
+
+Alternatif tanpa meng-install PostgreSQL di mesin. Perintah `podman` di bagian ini dan di bawahnya bisa diganti `docker` dengan argumen yang sama (misalnya `docker exec postgres-local psql ...`). Container `postgres-local` harus sudah berjalan. Buat database dan role di container:
 
 ```bash
 podman exec postgres-local psql -U postgres \
@@ -165,7 +221,7 @@ KIWI_DB=postgres ./run.sh migrate
 KIWI_DB=postgres ./run.sh loaddata data/sqlite_dump.json
 ```
 
-Jalankan pada database PostgreSQL yang masih kosong. Bila `loaddata` memakai ID eksplisit, reset sequence supaya insert berikutnya tidak bentrok:
+Jalankan pada database PostgreSQL yang masih kosong. Bila `loaddata` memakai ID eksplisit, reset sequence supaya insert berikutnya tidak bentrok (untuk PostgreSQL native, ganti bagian `podman exec -i postgres-local psql` dengan `psql -h localhost -U kiwi -d kiwi`):
 
 ```bash
 KIWI_DB=postgres ./run.sh sqlsequencereset auth management testcases testplans testruns \
