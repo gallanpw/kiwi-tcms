@@ -1,0 +1,73 @@
+# Copyright (c) 2025-2026 Alexander Todorov <atodorov@MrSenko.com>
+#
+# Licensed under the GPL 2.0 or later: https://www.gnu.org/licenses/old-licenses/gpl-2.0.html
+
+from django.forms.models import model_to_dict
+
+from tcms.rpc.decorators import permissions_required
+from tcms.rpc.views import rpc_method
+from tcms.testcases.admin import BugSystemAdminForm
+from tcms.testcases.models import BugSystem
+
+
+@rpc_method(
+    name="BugTracker.filter",
+    auth=permissions_required("testcases.view_bugsystem"),
+)
+def filter(query):  # pylint: disable=redefined-builtin
+    """
+    .. function:: RPC BugTracker.filter(query)
+
+        Perform a search and return the resulting list of bug trackers.
+
+        :param query: Field lookups for :class:`tcms.testcases.models.BugSystem`
+        :type query: dict
+        :return: Serialized list of :class:`tcms.testcases.models.BugSystem` objects
+        :rtype: dict
+        :raises PermissionDenied: if missing *testcases.view_bugsystem* permission
+    """
+    return list(
+        BugSystem.objects.filter(**query)
+        .values(
+            "id",
+            "name",
+            "tracker_type",
+            "base_url",
+            "api_url",
+            "api_username",
+            # not exposing this field via RPC b/c it will leak
+            # "api_password",
+        )
+        .order_by("id")
+        .distinct()
+    )
+
+
+@rpc_method(
+    name="BugTracker.create",
+    auth=permissions_required("testcases.add_bugsystem"),
+)
+def create(values):
+    """
+    .. function:: RPC BugTracker.create(values)
+
+        Create a new BugSystem object and store it in the database.
+
+        :param values: Field values for :class:`tcms.testcases.models.BugSystem`
+        :type values: dict
+        :return: Serialized :class:`tcms.testcases.models.BugSystem` object
+        :rtype: dict
+        :raises ValueError: if input values don't validate
+        :raises PermissionDenied: if missing *testcases.add_bugsystem* permission
+    """
+    form = BugSystemAdminForm(values)
+
+    if form.is_valid():
+        bug_system = form.save()
+        result = model_to_dict(bug_system)
+        # not exposing this field via RPC b/c it will leak
+        del result["api_password"]
+
+        return result
+
+    raise ValueError(list(form.errors.items()))

@@ -1,0 +1,137 @@
+{% extends "base.html" %}
+{% load static %}
+{% block title %}{{ project.name }} — Test cases{% endblock %}
+{% block page_id %}page-project-testcases{% endblock %}
+{% block contents %}
+<main class="project-testcases-page">
+  <ol class="breadcrumb">
+    <li><a href="/projects/">Projects</a></li>
+    <li class="active">{{ project.name }}</li>
+  </ol>
+  <div class="testcases-heading">
+    <h1>Test cases</h1>
+    <div class="testcases-view-actions" aria-label="View actions">
+      <button class="btn btn-link" type="button" aria-label="Suite tree view"><i class="fa fa-bars"></i></button>
+      <button class="btn btn-default" type="button" aria-label="More actions">⋮</button>
+    </div>
+  </div>
+  <div class="testcases-toolbar">
+    <button class="btn btn-success" id="add-suite" type="button"><i class="fa fa-plus-circle"></i> SUITE</button>
+    <a class="btn btn-success" href="/cases/{{ project.code }}/new/"><i class="fa fa-plus-circle"></i> CASE</a>
+    <div class="input-group testcases-search">
+      <span class="input-group-addon"><i class="fa fa-search"></i></span>
+      <input class="form-control" id="case-search" type="search" placeholder="Search by Case" aria-label="Search suites and test cases">
+      <span class="input-group-btn"><button class="btn btn-default" id="clear-search" type="button" aria-label="Clear search">&times;</button></span>
+    </div>
+    <button class="btn btn-default testcases-filter" id="suite-filter" type="button"><i class="fa fa-filter"></i> Filter</button>
+    <span class="testcases-project-label">{{ project.code }}</span>
+  </div>
+  <div id="tree-error" class="alert alert-danger" role="alert" hidden></div>
+  <div id="suite-tree" class="testcase-workspace" data-project-id="{{ project.pk }}" data-project-code="{{ project.code }}">
+    <aside class="suite-sidebar" aria-label="Test case suites">
+      <div class="suite-sidebar-toolbar">
+        <button type="button" id="collapse-suites" class="btn btn-link" aria-label="Collapse all suites"><i class="fa fa-align-left"></i></button>
+        <span id="suite-total" class="suite-total"></span>
+        <button type="button" id="expand-suites" class="btn btn-link" aria-label="Expand all suites"><i class="fa fa-angle-double-down"></i></button>
+      </div>
+      <nav id="suite-navigation" class="suite-navigation"></nav>
+    </aside>
+    <section id="suite-content" class="suite-content" aria-live="polite"></section>
+  </div>
+</main>
+<div id="suite-modal" class="modal fade" role="dialog" aria-labelledby="suite-modal-title" aria-hidden="true" hidden>
+  <div class="modal-dialog" role="document"><div class="modal-content">
+    <form id="suite-form">
+      {% csrf_token %}
+      <div class="modal-header">
+        <button type="button" class="close" id="suite-modal-close" aria-label="Close"><span aria-hidden="true">&times;</span></button>
+        <h3 class="modal-title" id="suite-modal-title">Create suite</h3>
+      </div>
+      <div class="modal-body">
+        <div id="suite-modal-error" class="alert alert-danger" role="alert" hidden></div>
+        <div class="form-group">
+          <label for="suite-title">Suite title</label>
+          <input class="form-control" id="suite-title" name="title" maxlength="255" required>
+        </div>
+        <div class="form-group">
+          <label for="suite-parent">Parent suite</label>
+          <select class="form-control" id="suite-parent" name="parent_suite" required></select>
+        </div>
+        <div class="form-group">
+          <label for="suite-description">Description <span class="text-muted">(optional)</span></label>
+          <textarea class="form-control" id="suite-description" name="description" rows="3"></textarea>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-default" id="suite-modal-cancel" type="button">Cancel</button>
+        <button class="btn btn-success" id="suite-submit" type="submit">Create suite</button>
+      </div>
+    </form>
+  </div></div>
+</div>
+<style>
+  body#page-project-testcases { background:#f7f8f9; }
+  #page-project-testcases [hidden] { display:none !important; }
+  .project-testcases-page { padding:14px 16px 36px; }
+  .project-testcases-page .breadcrumb { margin:0 0 4px; padding:0; background:transparent; font-size:12px; }
+  .testcases-heading { display:flex; align-items:center; justify-content:space-between; }
+  .testcases-heading h1 { margin:4px 0 12px; color:#687780; font-size:24px; font-weight:400; }
+  .testcases-view-actions { display:flex; gap:4px; }
+  .testcases-view-actions .btn { padding:4px 9px; color:#52626b; }
+  .testcases-view-actions .btn:last-child { background:#12354a; color:#fff; font-size:18px; line-height:20px; }
+  .testcases-toolbar { display:flex; align-items:center; gap:7px; margin-bottom:18px; }
+  .testcases-toolbar > .btn { min-height:32px; font-weight:600; }
+  .testcases-search { width:min(340px, 40vw); margin-left:0; }
+  .testcases-search .input-group-addon { background:#fff; color:#7b8991; }
+  .testcases-search .input-group-btn .btn { height:34px; }
+  .testcases-filter { white-space:nowrap; }
+  .testcases-project-label { margin-left:auto; color:#76858e; font-size:12px; }
+  .testcase-workspace { display:grid; grid-template-columns:minmax(230px, 270px) minmax(0, 1fr); min-height:390px; border-top:1px solid #dfe5e8; }
+  .suite-sidebar { min-width:0; padding:0 12px 12px 0; border-right:1px solid #dfe5e8; }
+  .suite-sidebar-toolbar { display:flex; align-items:center; gap:5px; height:40px; border-bottom:1px solid #e5e9eb; color:#7c8a92; font-size:11px; }
+  .suite-sidebar-toolbar .btn { padding:4px 3px; color:#099f99; }
+  .suite-total { flex:1; text-align:center; }
+  .suite-navigation { padding-top:5px; }
+  .suite-nav-item { display:flex; align-items:center; min-height:27px; padding-right:5px; border-radius:2px; color:#29343a; font-size:12px; }
+  .suite-nav-item.is-selected { background:#67c9c1; color:#173d3b; }
+  .suite-nav-toggle, .suite-nav-spacer { flex:0 0 20px; width:20px; text-align:center; }
+  .suite-nav-toggle { padding:2px 0; border:0; background:transparent; color:#74838b; }
+  .suite-nav-label { flex:1; overflow:hidden; padding:4px 0; border:0; background:transparent; color:inherit; font-weight:500; text-align:left; text-overflow:ellipsis; white-space:nowrap; }
+  .suite-nav-count { padding-left:6px; color:#718089; font-size:10px; }
+  .suite-nav-children { padding-left:10px; border-left:1px solid #e2e7e9; margin-left:8px; }
+  .suite-content { min-width:0; padding:6px 18px 22px; }
+  .suite-content-heading { display:flex; align-items:center; justify-content:space-between; gap:12px; margin:0 0 12px; }
+  .suite-content-heading h2 { margin:0; font-size:16px; font-weight:600; }
+  .suite-heading-meta { color:#718089; font-size:11px; }
+  .suite-quick-actions { margin:8px 0 10px; color:#aab5bb; font-size:11px; }
+  .suite-quick-actions a, .suite-quick-actions button { padding:0; border:0; background:transparent; color:#97a5ad; }
+  .suite-quick-actions a:hover, .suite-quick-actions button:hover { color:#009f95; }
+  .suite-entry-list { border-top:1px solid #e5e9eb; }
+  .suite-entry { display:flex; align-items:center; gap:8px; min-height:32px; padding:4px 0; border-bottom:1px solid #edf0f1; }
+  .suite-entry-open { display:flex; flex:1; align-items:center; gap:7px; min-width:0; padding:3px 0; border:0; background:transparent; color:#26343a; text-align:left; }
+  .suite-entry-open .fa { width:10px; color:#73828a; }
+  .suite-entry-title { overflow:hidden; font-size:12px; font-weight:600; text-overflow:ellipsis; white-space:nowrap; }
+  .suite-entry-count { color:#76858d; font-size:11px; white-space:nowrap; }
+  .suite-entry-actions { display:flex; gap:3px; opacity:.72; }
+  .suite-entry-actions .btn { padding:2px 4px; color:#84929a; }
+  .case-entry { display:flex; align-items:center; gap:8px; min-height:34px; padding:5px 3px; border-bottom:1px solid #edf0f1; }
+  .case-entry-title { flex:1; min-width:0; overflow:hidden; color:#26343a; font-size:12px; text-overflow:ellipsis; white-space:nowrap; }
+  .case-entry-code { color:#718089; font-size:11px; white-space:nowrap; }
+  .case-entry-actions { display:flex; gap:3px; }
+  .case-entry-actions .btn { padding:2px 4px; color:#84929a; }
+  .suite-empty { padding:24px 12px; color:#84929a; font-size:13px; text-align:center; }
+  #suite-modal[hidden] { display:none !important; }
+  #suite-modal { overflow:auto; }
+  @media (max-width: 700px) {
+    .project-testcases-page { padding:12px; }
+    .testcases-toolbar { flex-wrap:wrap; }
+    .testcases-search { order:2; width:100%; }
+    .testcases-filter { order:3; }
+    .testcases-project-label { margin-left:auto; }
+    .testcase-workspace { grid-template-columns:1fr; }
+    .suite-sidebar { padding-right:0; border-right:0; border-bottom:1px solid #dfe5e8; }
+    .suite-content { padding:14px 0; }
+  }
+</style>
+<script src="{% static 'js/project_testcases.js' %}"></script>
+{% endblock %}

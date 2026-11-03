@@ -1,0 +1,442 @@
+from django.db.models import Count
+from django.forms.models import model_to_dict
+
+from tcms.management.project_scope import pop_project_id
+from tcms.management.models import Tag
+from tcms.rpc import utils
+from tcms.rpc.api.forms.testplan import EditPlanForm, NewPlanAPIForm
+from tcms.rpc.decorators import permissions_required
+from tcms.rpc.views import rpc_method
+from tcms.testcases.models import TestCase, TestCasePlan
+from tcms.testplans.forms import ClonePlanForm
+from tcms.testplans.models import TestPlan
+
+
+@rpc_method(
+    name="TestPlan.create",
+    auth=permissions_required("testplans.add_testplan"),
+    context_target="rpc_context",
+)
+def create(values, rpc_context=None):
+    """
+    .. function:: RPC TestPlan.create(values)
+
+        Create new Test Plan object and store it in the database.
+
+        :param values: Field values for :class:`tcms.testplans.models.TestPlan`
+        :type values: dict
+        :param rpc_context: Provides access to the current request, protocol,
+                entry point name and handler instance from the rpc method
+        :type rpc_context: modernrpc.core.RpcRequestContext
+        :return: Serialized :class:`tcms.testplans.models.TestPlan` object
+        :rtype: dict
+        :raises PermissionDenied: if missing *testplans.add_testplan* permission
+        :raises ValueError: if data validation fails
+
+        Minimal parameters::
+
+            >>> values = {
+                'product': 61,
+                'product_version': 93,
+                'name': 'Testplan foobar',
+                'type': 1,
+                'parent': 150,
+                'text':'Testing TCMS',
+            }
+            >>> TestPlan.create(values)
+    """
+    request = rpc_context.request
+
+    if not values.get("author"):
+        values["author"] = request.user.pk
+
+    if not values.get("is_active"):
+        values["is_active"] = True
+
+    form = NewPlanAPIForm(values, request=request)
+    form.populate(product_id=values["product"])
+
+    if form.is_valid():
+        test_plan = form.save()
+        # auto_now_add will *always* set current date! see:
+        # https://docs.djangoproject.com/en/6.0/ref/models/fields/#django.db.models.DateField.auto_now_add
+        if "create_date" in form.cleaned_data:
+            test_plan.create_date = form.cleaned_data["create_date"]
+            test_plan.save()
+
+        result = model_to_dict(test_plan, exclude=["tag"])
+
+        # b/c value is set in the DB directly and if None
+        # model_to_dict() will not return it
+        result["create_date"] = test_plan.create_date
+        return result
+
+    raise ValueError(list(form.errors.items()))
+
+
+@rpc_method(
+    name="TestPlan.clone",
+    auth=permissions_required("testplans.add_testplan"),
+    context_target="rpc_context",
+)
+def clone(plan_id, values=None, rpc_context=None):
+    """
+    .. function:: RPC TestPlan.clone(plan_id, values)
+
+        Clone the TestPlan specified by ``plan_id``.
+
+        The values for the cloned plan default to the values of the source
+        plan, validation is performed by :class:`tcms.testplans.forms.ClonePlanForm`,
+        the same form used by the *Clone* page. The parent of the cloned plan
+        can only be the source plan itself, just like the *Clone* page.
+
+        :param plan_id: PK of TestPlan to clone
+        :type plan_id: int
+        :param values: Field values for the cloned :class:`tcms.testplans.models.TestPlan`
+        :type values: dict
+        :param rpc_context: Provides access to the current request, protocol,
+                entry point name and handler instance from the rpc method
+        :type rpc_context: modernrpc.core.RpcRequestContext
+        :return: Serialized :class:`tcms.testplans.models.TestPlan` object
+        :rtype: dict
+        :raises TestPlan.DoesNotExist: if object specified by PK is missing
+        :raises PermissionDenied: if missing *testplans.add_testplan* permission
+        :raises ValueError: if data validation fails
+
+        Minimal parameters::
+
+            >>> values = {
+                'name': 'Clone of TP-1: Plan name',
+                'product': 61,
+                'version': 93,
+                'parent': 1,
+                'copy_testcases': True,
+            }
+            >>> TestPlan.clone(1, values)
+
+        .. versionadded:: 16.6
+    """
+    request = rpc_context.request
+    test_plan = TestPlan.objects.get(pk=plan_id)
+
+    values = dict(values or {})
+
+    # same defaults as the tcms.testplans.views.Clone form
+    values.setdefault("name", test_plan.make_cloned_name())
+    values.setdefault("product", test_plan.product_id)
+    values.setdefault("version", test_plan.product_version_id)
+
+    form = ClonePlanForm(values)
+    form.populate(product_pk=values["product"], parent_pk=test_plan.pk)
+
+    if form.is_valid():
+        cloned_plan = test_plan.clone(new_author=request.user, **form.cleaned_data)
+
+        result = model_to_dict(cloned_plan, exclude=["tag"])
+
+        # b/c value is set in the DB directly and if None
+        # model_to_dict() will not return it
+        result["create_date"] = cloned_plan.create_date
+        return result
+
+    raise ValueError(list(form.errors.items()))
+
+
+@rpc_method(
+    name="TestPlan.filter",
+    auth=permissions_required("testplans.view_testplan"),
+)
+def filter(query=None):  # pylint: disable=redefined-builtin
+    """
+    .. function:: RPC TestPlan.filter(query)
+
+        Perform a search and return the resulting list of test plans.
+
+        :param query: Field lookups for :class:`tcms.testplans.models.TestPlan`
+        :type query: dict
+        :return: List of serialized :class:`tcms.testplans.models.TestPlan` objects
+        :rtype: list(dict)
+    """
+
+    if query is None:
+        query = {}
+
+    query, project_id = pop_project_id(query)
+    plans = TestPlan.objects.filter(**query)
+    if project_id is not None:
+        plans = plans.filter(id_project_id=project_id)
+
+    return list(
+        plans.values(
+            "id",
+            "name",
+            "text",
+            "create_date",
+            "is_active",
+            "extra_link",
+            "product_version",
+            "product_version__value",
+            "product",
+            "product__name",
+            "author",
+            "author__username",
+            "type",
+            "type__name",
+            "parent",
+        )
+        .annotate(Count("children"))
+        .order_by("product", "id")
+        .distinct()
+    )
+
+
+@rpc_method(
+    name="TestPlan.add_tag",
+    auth=permissions_required("testplans.add_testplantag"),
+    context_target="rpc_context",
+)
+def add_tag(plan_id, tag_name, rpc_context=None):
+    """
+    .. function:: RPC TestPlan.add_tag(plan_id, tag_name)
+
+        Add a tag to the specified test plan.
+
+        :param plan_id: PK of TestPlan to modify
+        :type plan_id: int
+        :param tag_name: Tag name to add
+        :type tag_name: str
+        :param rpc_context: Provides access to the current request, protocol,
+                entry point name and handler instance from the rpc method
+        :type rpc_context: modernrpc.core.RpcRequestContext
+        :raises PermissionDenied: if missing *testplans.add_testplantag* permission
+        :raises TestPlan.DoesNotExist: if object specified by PK doesn't exist
+        :raises Tag.DoesNotExist: if missing *management.add_tag* permission and *tag_name*
+                 doesn't exist in the database!
+    """
+    request = rpc_context.request
+    tag, _ = Tag.get_or_create(request.user, tag_name)
+    TestPlan.objects.get(pk=plan_id).add_tag(tag)
+
+
+@rpc_method(
+    name="TestPlan.remove_tag",
+    auth=permissions_required("testplans.delete_testplantag"),
+)
+def remove_tag(plan_id, tag_name):
+    """
+    .. function:: RPC TestPlan.remove_tag(plan_id, tag_name)
+
+        Remove tag from the specified test plan.
+
+        :param plan_id: PK of TestPlan to modify
+        :type plan_id: int
+        :param tag_name: Tag name to remove
+        :type tag_name: str
+        :raises PermissionDenied: if missing *testplans.delete_testplantag* permission
+        :raises DoesNotExist: if objects specified don't exist
+    """
+    tag = Tag.objects.get(name=tag_name)
+    TestPlan.objects.get(pk=plan_id).remove_tag(tag)
+
+
+@rpc_method(
+    name="TestPlan.update",
+    auth=permissions_required("testplans.change_testplan"),
+    context_target="rpc_context",
+)
+def update(plan_id, values, rpc_context=None):
+    """
+    .. function:: RPC TestPlan.update(plan_id, values)
+
+        Update the fields of the selected test plan.
+
+        :param plan_id: PK of TestPlan to modify
+        :type plan_id: int
+        :param values: Field values for :class:`tcms.testplans.models.TestPlan`
+        :type values: dict
+        :param rpc_context: Provides access to the current request, protocol,
+                entry point name and handler instance from the rpc method
+        :type rpc_context: modernrpc.core.RpcRequestContext
+        :return: Serialized :class:`tcms.testplans.models.TestPlan` object
+        :rtype: dict
+        :raises TestPlan.DoesNotExist: if object specified by PK doesn't exist
+        :raises PermissionDenied: if missing *testplans.change_testplan* permission
+        :raises ValueError: if validations fail
+    """
+    request = rpc_context.request
+    test_plan = TestPlan.objects.get(pk=plan_id)
+    form = EditPlanForm(values, instance=test_plan, request=request)
+    if form.is_valid():
+        test_plan = form.save()
+        result = model_to_dict(test_plan, exclude=["tag"])
+
+        # b/c value is set in the DB directly and if None
+        # model_to_dict() will not return it
+        result["create_date"] = test_plan.create_date
+        return result
+
+    raise ValueError(list(form.errors.items()))
+
+
+@rpc_method(
+    name="TestPlan.add_case",
+    auth=permissions_required("testcases.add_testcaseplan"),
+)
+def add_case(plan_id, case_id):
+    """
+    .. function:: RPC TestPlan.add_case(plan_id, case_id)
+
+        Link test case to the given plan.
+
+        :param plan_id: PK of TestPlan to modify
+        :type plan_id: int
+        :param case_id: PK of TestCase to be added to plan
+        :type case_id: int
+        :return: Serialized :class:`tcms.testcases.models.TestCase` object
+                 augmented with a 'sortkey' value
+        :rtype: dict
+        :raises TestPlan.DoesNotExit or TestCase.DoesNotExist: if objects specified
+                 by PKs are missing
+        :raises PermissionDenied: if missing *testcases.add_testcaseplan* permission
+    """
+    plan = TestPlan.objects.get(pk=plan_id)
+    case = TestCase.objects.get(pk=case_id)
+    test_case_plan = plan.add_case(case)
+
+    result = model_to_dict(case, exclude=["component", "plan", "tag"])
+    result["create_date"] = case.create_date
+    result["sortkey"] = test_case_plan.sortkey
+    return result
+
+
+@rpc_method(
+    name="TestPlan.remove_case",
+    auth=permissions_required("testcases.delete_testcaseplan"),
+)
+def remove_case(plan_id, case_id):
+    """
+    .. function:: RPC TestPlan.remove_case(plan_id, case_id)
+
+        Unlink a test case from the given plan.
+
+        :param plan_id: PK of TestPlan to modify
+        :type plan_id: int
+        :param case_id: PK of TestCase to be removed from plan
+        :type case_id: int
+        :raises PermissionDenied: if missing *testcases.delete_testcaseplan* permission
+    """
+    TestCasePlan.objects.filter(case=case_id, plan=plan_id).delete()
+
+
+@rpc_method(
+    name="TestPlan.update_case_order",
+    auth=permissions_required("testcases.change_testcaseplan"),
+)
+def update_case_order(plan_id, case_id, sortkey):
+    """
+    .. function:: RPC TestPlan.update_case_order(plan_id, case_id, sortkey)
+
+        Update sortkey which controls display order of the given test case in
+        the given test plan.
+
+        :param plan_id: PK of TestPlan holding the selected TestCase
+        :type plan_id: int
+        :param case_id: PK of TestCase to be modified
+        :type case_id: int
+        :param sortkey: Ordering value, e.g. 10, 20, 30
+        :type sortkey: int
+        :raises PermissionDenied: if missing *testcases.delete_testcaseplan* permission
+    """
+    TestCasePlan.objects.filter(  # pylint:disable=objects-update-used
+        case=case_id, plan=plan_id
+    ).update(sortkey=sortkey)
+
+
+@rpc_method(
+    name="TestPlan.list_attachments",
+    auth=permissions_required("attachments.view_attachment"),
+    context_target="rpc_context",
+)
+def list_attachments(plan_id, rpc_context=None):
+    """
+    .. function:: RPC TestPlan.list_attachments(plan_id)
+
+        List attachments for the given TestPlan.
+
+        :param plan_id: PK of TestPlan to inspect
+        :type plan_id: int
+        :param rpc_context: Provides access to the current request, protocol,
+                entry point name and handler instance from the rpc method
+        :type rpc_context: modernrpc.core.RpcRequestContext
+        :return: A list containing information and download URLs for attachements
+        :rtype: list
+        :raises TestPlan.DoesNotExit: if object specified by PK is missing
+    """
+    plan = TestPlan.objects.get(pk=plan_id)
+    request = rpc_context.request
+    return utils.get_attachments_for(request, plan)
+
+
+@rpc_method(
+    name="TestPlan.add_attachment",
+    auth=permissions_required("attachments.add_attachment"),
+    context_target="rpc_context",
+)
+def add_attachment(plan_id, filename, b64content, rpc_context=None):
+    """
+    .. function:: RPC TestPlan.add_attachment(plan_id, filename, b64content)
+
+        Add attachment to the given TestPlan.
+
+        :param plan_id: PK of TestPlan
+        :type plan_id: int
+        :param filename: File name of attachment, e.g. 'logs.txt'
+        :type filename: str
+        :param b64content: Base64 encoded content
+        :type b64content: str
+        :param rpc_context: Provides access to the current request, protocol,
+                entry point name and handler instance from the rpc method
+        :type rpc_context: modernrpc.core.RpcRequestContext
+    """
+    utils.add_attachment(
+        plan_id,
+        "testplans.TestPlan",
+        rpc_context.request.user,
+        filename,
+        b64content,
+    )
+
+
+@rpc_method(
+    name="TestPlan.tree",
+    auth=permissions_required("testplans.view_testplan"),
+)
+def tree(plan_id):
+    """
+    .. function:: RPC TestPlan.tree(plan_id)
+
+        Returns a list of the ancestry tree for the given TestPlan
+        in a depth-first order!
+
+        :param plan_id: PK of TestPlan to inspect
+        :type plan_id: int
+        :return: A DFS ordered list of all test plans in the family tree
+                 starting from the root of the tree
+        :rtype: list
+        :raises TestPlan.DoesNotExit: if object specified by PK is missing
+    """
+    plan = TestPlan.objects.get(pk=plan_id)
+    result = []
+
+    for record in plan.tree_as_list():
+        result.append(
+            {
+                "id": record.pk,
+                "name": record.name,
+                "parent_id": record.parent_id,
+                "tree_depth": record.tree_depth,
+                "url": record.get_full_url(),
+            }
+        )
+
+    return result

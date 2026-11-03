@@ -1,0 +1,37 @@
+from django.conf import settings
+from django.contrib.sites.models import Site
+from django.core.management.base import BaseCommand
+from django.db import DEFAULT_DB_ALIAS, connections
+
+
+class Command(BaseCommand):
+    help = (
+        "Sets the domain of Kiwi TCMS instance. "
+        "If no arguments given returns current domain."
+    )
+
+    def add_arguments(self, parser):
+        parser.add_argument(
+            "--database",
+            default=DEFAULT_DB_ALIAS,
+            choices=tuple(connections),
+            help='Specifies the database to use. Default is "default".',
+        )
+
+        parser.add_argument(
+            "domain",
+            nargs="?",
+            default=None,
+            help="The domain of Kiwi TCMS instance",
+        )
+
+    def handle(self, *args, **kwargs):
+        database = kwargs["database"]
+        site = Site.objects.using(database).get(id=settings.SITE_ID)
+        if not kwargs["domain"]:
+            self.stdout.write(site.domain)
+            return
+        site.domain = kwargs["domain"]
+        site.name = "Kiwi TCMS"
+        site.save()
+        self.stdout.write("Domain updated successfully.")

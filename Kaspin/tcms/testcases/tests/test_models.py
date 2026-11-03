@@ -1,0 +1,296 @@
+# -*- coding: utf-8 -*-
+# pylint: disable=invalid-name, no-member
+from datetime import timedelta
+
+from django.conf import settings
+from django.core.exceptions import ValidationError
+from django.template.loader import render_to_string
+from django.test import TestCase, override_settings
+from django.utils.translation import gettext_lazy as _
+from mock import patch
+from parameterized import parameterized
+
+from tcms.core.history import history_email_for
+from tcms.core.utils.mailto import mailto
+from tcms.testcases.helpers.email import get_case_notification_recipients
+from tcms.testcases.models import BugSystem
+from tcms.tests import BasePlanCase, deny_certain_email_addresses
+from tcms.tests.factories import (
+    ComponentFactory,
+    TagFactory,
+    TestCaseComponentFactory,
+    TestCaseFactory,
+    TestCaseTagFactory,
+)
+
+
+class SupportsCyrillic(TestCase):
+    def test_create_testcase_with_cyrillic_works_issue_1770(self):
+        # https://github.com/kiwitcms/Kiwi/issues/1770
+        case = TestCaseFactory(summary="Това е тест на кирилица")
+        case.save()
+
+        case.refresh_from_db()
+        self.assertTrue(case.summary.endswith("кирилица"))
+
+
+class TestCaseRemoveComponent(BasePlanCase):
+    """Test TestCase.remove_component"""
+
+    @classmethod
+    def setUpTestData(cls):
+        super(TestCaseRemoveComponent, cls).setUpTestData()
+
+        cls.component_1 = ComponentFactory(
+            name="Application",
+            product=cls.product,
+            initial_owner=cls.tester,
+        )
+        cls.component_2 = ComponentFactory(
+            name="Database",
+            product=cls.product,
+            initial_owner=cls.tester,
+        )
+
+        cls.cc_rel_1 = TestCaseComponentFactory(
+            case=cls.case, component=cls.component_1
+        )
+        cls.cc_rel_2 = TestCaseComponentFactory(
+            case=cls.case, component=cls.component_2
+        )
+
+    def test_remove_a_component(self):
+        self.case.remove_component(self.component_1)
+
+        found = self.case.component.filter(pk=self.component_1.pk).exists()
+        self.assertFalse(
+            found,
+            f"Component {self.component_1.pk} exists. But, it should be removed.",
+        )
+        found = self.case.component.filter(pk=self.component_2.pk).exists()
+        self.assertTrue(
+            found,
+            f"Component {self.component_2.pk} does not exist. It should not be removed.",
+        )
+
+
+class TestCaseRemoveTag(BasePlanCase):
+    """Test TestCase.remove_tag"""
+
+    @classmethod
+    def setUpTestData(cls):
+        super(TestCaseRemoveTag, cls).setUpTestData()
+
+        cls.tag_rhel = TagFactory(name="rhel")
+        cls.tag_fedora = TagFactory(name="fedora")
+        TestCaseTagFactory(case=cls.case, tag=cls.tag_rhel)
+        TestCaseTagFactory(case=cls.case, tag=cls.tag_fedora)
+
+    def test_remove_tag(self):
+        self.case.remove_tag(self.tag_rhel)
+
+        tag_pks = list(self.case.tag.all().values_list("pk", flat=True))
+        self.assertEqual([self.tag_fedora.pk], tag_pks)
+
+
+class TestSendMailOnCaseIsUpdated(BasePlanCase):
+    """Test send mail on case post_save signal is triggered"""
+
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+
+        cls.case.emailing.notify_on_case_update = True
+        cls.case.emailing.auto_to_case_author = True
+        cls.case.emailing.save()
+
+    @patch("tcms.core.utils.mailto.send_mail")
+    def test_send_mail_to_case_author(self, send_mail):
+        # note: includes \n and \r characters
+        self.case.summary = "New summary\n for\r running test"
+        self.case.save()
+
+        expected_subject, expected_body = history_email_for(
+            self.case, self.case.summary
+        )
+        recipients = get_case_notification_recipients(self.case)
+
+        # make sure subject doesn't result in a multi-line header
+        self.assertEqual(expected_subject.find("\n"), -1)
+        self.assertEqual(expected_subject.find("\r"), -1)
+
+        # Verify notification mail
+        send_mail.assert_called_once_with(
+            settings.EMAIL_SUBJECT_PREFIX + expected_subject,
+            expected_body,
+            settings.DEFAULT_FROM_EMAIL,
+            recipients,
+            fail_silently=False,
+        )
+
+
+class TestSendMailOnCaseIsDeleted(BasePlanCase):
+    """Test send mail on case post_delete signal is triggered"""
+
+    @classmethod
+    def setUpTestData(cls):
+        super().setUpTestData()
+
+        cls.case.emailing.notify_on_case_delete = True
+        cls.case.emailing.auto_to_case_author = True
+        cls.case.emailing.save()
+
+    @patch("tcms.core.utils.mailto.send_mail")
+    def test_send_mail_to_case_author(self, send_mail):
+        expected_subject = _("DELETED: TestCase #%(pk)d - %(summary)s") % {
+            "pk": self.case.pk,
+            "summary": self.case.summary,
+        }
+        expected_body = render_to_string(
+            "email/post_case_delete/email.txt", {"case": self.case}
+        )
+        recipients = get_case_notification_recipients(self.case)
+
+        self.case.delete()
+
+        # Verify notification mail
+        send_mail.assert_called_once_with(
+            settings.EMAIL_SUBJECT_PREFIX + expected_subject,
+            expected_body,
+            settings.DEFAULT_FROM_EMAIL,
+            recipients,
+            fail_silently=False,
+        )
+
+    @override_settings(
+        EMAIL_VALIDATORS=(deny_certain_email_addresses,),
+    )
+    def test_email_sent_only_to_valid_addresses(self):
+        expected_subject = "Test recipient filtering"
+        expected_body = render_to_string(
+            "email/post_case_delete/email.txt", {"case": self.case}
+        )
+
+        with patch("tcms.core.utils.mailto.send_mail") as send_mail:
+            mailto(
+                template_name="email/post_case_delete/email.txt",
+                recipients=["invalid@yahoo.com", "tester@example.bg"],
+                subject=expected_subject,
+                context={
+                    "case": self.case,
+                },
+            )
+
+            send_mail.assert_called_once_with(
+                settings.EMAIL_SUBJECT_PREFIX + expected_subject,
+                expected_body,
+                settings.DEFAULT_FROM_EMAIL,
+                ["tester@example.bg"],
+                fail_silently=False,
+            )
+
+    @override_settings(
+        EMAIL_VALIDATORS=(deny_certain_email_addresses,),
+    )
+    def test_email_not_sent_when_recipient_list_is_empty(self):
+        expected_subject = "Test recipient filtering"
+
+        with patch("tcms.core.utils.mailto.send_mail") as send_mail:
+            mailto(
+                template_name="email/post_case_delete/email.txt",
+                recipients=["invalid@yahoo.com", "another-invalid@yahoo.co.in"],
+                subject=expected_subject,
+                context={
+                    "case": self.case,
+                },
+            )
+
+            send_mail.assert_not_called()
+
+
+class TestExtraLinkURLField(TestCase):
+    @parameterized.expand(
+        [
+            ("http", "http://example.com"),
+            ("https", "https://example.com"),
+            ("ftp", "ftp://example.com"),
+            ("ftps", "ftps://example.com"),
+        ]
+    )
+    def test_extra_link_valid_schemes(self, _name, url):
+        case = TestCaseFactory(extra_link=url)
+        case.full_clean()
+        self.assertEqual(case.extra_link, url)
+
+    @parameterized.expand(
+        [
+            ("javascript_colon", "javascript:alert(1)"),
+            ("javascript_slash", "javascript://alert(1)"),
+            ("invalid_scheme", "other://example.com"),
+            ("no_scheme", "example.com"),
+        ]
+    )
+    def test_extra_link_invalid_schemes(self, _name, url):
+        case = TestCaseFactory.build(extra_link=url)
+        with self.assertRaises(ValidationError):
+            case.full_clean()
+
+
+class TestBugSystemURLFields(TestCase):
+    @parameterized.expand(
+        [
+            ("http", "http://example.com"),
+            ("https", "https://example.com"),
+        ]
+    )
+    def test_base_url_and_api_url_valid_schemes(self, _name, url):
+        bug_system = BugSystem(
+            name="Test tracker",
+            base_url=url,
+            api_url=url,
+        )
+        bug_system.full_clean()
+        self.assertEqual(bug_system.base_url, url)
+        self.assertEqual(bug_system.api_url, url)
+
+    @parameterized.expand(
+        [
+            ("javascript_colon", "javascript:alert(1)"),
+            ("javascript_slash", "javascript://alert(1)"),
+            ("invalid_scheme", "other://example.com"),
+            ("no_scheme", "example.com"),
+        ]
+    )
+    def test_base_url_and_api_url_invalid_schemes(self, _name, url):
+        bug_system = BugSystem(
+            name="Test tracker",
+            base_url=url,
+            api_url=url,
+        )
+        with self.assertRaises(ValidationError):
+            bug_system.full_clean()
+
+
+class TestCaseCalculateExpectedDuration(TestCase):
+    """Test TestCase.expected_duration"""
+
+    @parameterized.expand(
+        [
+            (
+                "both_values_are_set",
+                timedelta(days=1),
+                timedelta(days=1),
+                timedelta(days=2),
+            ),
+            ("both_values_are_none", None, None, timedelta(0)),
+            ("setup_duration_is_none", None, timedelta(days=1), timedelta(days=1)),
+            ("testing_duration_is_none", timedelta(days=1), None, timedelta(days=1)),
+        ]
+    )
+    def test_test_case_expected_duration_property_when(
+        self, _name, setup_duration, testing_duration, expected
+    ):
+        test_case = TestCaseFactory(
+            setup_duration=setup_duration, testing_duration=testing_duration
+        )
+        self.assertEqual(test_case.expected_duration, expected)

@@ -1,0 +1,51 @@
+name: docker-tag
+
+on:
+  push:
+    tags:
+      - v*
+
+permissions: read-all
+
+jobs:
+  build_and_push:
+    env:
+      RUNTIME_BASE: registry.access.redhat.com/ubi10-minimal:latest
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        python-version: [3.12]
+
+    steps:
+      - uses: actions/checkout@v7
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Build for ${{ github.event.ref }}
+        run: |
+            make docker-image
+
+            echo "+++++ Docker images +++++"
+            docker images
+
+      - name: Upload packages for ${{ github.event.ref }}
+        env:
+          TWINE_PASSWORD: ${{ secrets.GEMFURY_PUSH_TOKEN }}
+        run: |
+            make upload-pkg
+
+      - name: Push docker image for ${{ github.event.ref }}
+        run: |
+            VERSION=$(python -m tcms)
+
+            # tag so we can push to private container registry
+            docker tag pub.kiwitcms.eu/kiwitcms/kiwi:latest quay.io/kiwitcms/upstream:$VERSION-$(uname -m)
+
+            echo "+++++ Docker images +++++"
+            docker images
+
+            echo "${{ secrets.QUAY_PUSH_TOKEN }}" | docker login -u="${{ secrets.QUAY_PUSH_USERNAME }}" --password-stdin quay.io
+            docker push quay.io/kiwitcms/upstream:$VERSION-$(uname -m)
+            docker logout quay.io
