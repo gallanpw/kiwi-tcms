@@ -1,0 +1,24 @@
+# /etc/systemd/system/kiwi.service
+# Sesuaikan User dan path jika berbeda.
+[Unit]
+Description=Kiwi TCMS (gunicorn)
+After=network.target postgresql.service
+Wants=postgresql.service
+
+[Service]
+User=gallanwidyanto
+Group=gallanwidyanto
+WorkingDirectory=/home/gallanwidyanto/kiwi-tcms
+Environment=PYTHONPATH=/home/gallanwidyanto/kiwi-tcms:/home/gallanwidyanto/kiwi-tcms/Kiwi:/home/gallanwidyanto/kiwi-tcms/deploy/server
+Environment=DJANGO_SETTINGS_MODULE=kiwi_prod_settings
+ExecStart=/home/gallanwidyanto/kiwi-tcms/.venv/bin/gunicorn tcms.wsgi:application \
+    --bind 127.0.0.1:8000 \
+    --workers 3 \
+    --timeout 60 \
+    --access-logfile - \
+    --error-logfile -
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
