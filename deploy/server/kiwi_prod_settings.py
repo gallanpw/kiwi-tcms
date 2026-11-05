@@ -55,3 +55,7 @@ DATABASES = {
 # Served by nginx (see nginx-kiwi.conf); keep outside /home so www-data can read them
 STATIC_ROOT = os.environ.get("KIWI_STATIC_ROOT", "/var/www/kiwi/static")
 MEDIA_ROOT = os.environ.get("KIWI_MEDIA_ROOT", "/var/www/kiwi/uploads")
+
+# superusers see every plan and unfinished run on the dashboard (see kiwi_dashboard.py)
+ROOT_URLCONF = "kiwi_urls"
+TEMPLATES[0]["DIRS"].insert(0, str(BASE / "kiwi_templates"))  # noqa: F405
