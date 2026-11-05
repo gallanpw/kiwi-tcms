@@ -14,3 +14,6 @@ scripts/zebrunner_*.json
 # Vercel: hasil collectstatic saat build, dan env var untuk migrasi dari laptop
 /staticfiles/
 .env.vercel
+
+# catatan setup server (bisa memuat host, akun, dan credential)
+SERVER-SETUP-NOTES.md
