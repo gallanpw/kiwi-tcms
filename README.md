@@ -9,6 +9,7 @@ Repo ini **tidak menyalin kode Kiwi**. Kode upstream ada di folder `Kiwi/` sebag
 | Path | Fungsi |
 |---|---|
 | `kiwi_local_settings.py` | Settings Django lokal. Basis `tcms.settings.devel`. Membaca `.env` dan memilih DB (SQLite atau PostgreSQL) lewat `KIWI_DB`. |
+| `kiwi_custom_package/` | Semua kode `.py` kustomisasi di atas Kiwi (dashboard superuser, register tanpa verifikasi email, URLconf). `Kiwi/` tetap submodule murni. Detail: `UI-CUSTOMIZATION-OPTIONS.md`. |
 | `.env.example` | Contoh `.env`. Salin ke `.env` dan sesuaikan. |
 | `.env` | Konfigurasi lokal (pilihan DB dan kredensial). Dibuat sendiri, di-ignore git. |
 | `run.sh` | Wrapper `manage.py` (mengatur `PYTHONPATH`, `DJANGO_SETTINGS_MODULE`, memakai `.venv`). |
