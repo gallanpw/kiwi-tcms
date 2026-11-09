@@ -56,6 +56,6 @@ DATABASES = {
 STATIC_ROOT = os.environ.get("KIWI_STATIC_ROOT", "/var/www/kiwi/static")
 MEDIA_ROOT = os.environ.get("KIWI_MEDIA_ROOT", "/var/www/kiwi/uploads")
 
-# superusers see every plan and unfinished run on the dashboard (see kiwi_dashboard.py)
-ROOT_URLCONF = "kiwi_urls"
+# superusers see every plan and unfinished run on the dashboard (see kiwi_custom_package/dashboard.py)
+ROOT_URLCONF = "kiwi_custom_package.urls"
 TEMPLATES[0]["DIRS"].insert(0, str(BASE / "kiwi_templates"))  # noqa: F405
