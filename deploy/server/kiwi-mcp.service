@@ -1,0 +1,34 @@
+# /etc/systemd/system/kiwi-mcp.service
+# Sesuaikan User dan path jika berbeda.
+#
+# Hubungan dengan kiwi.service (satu arah):
+#   - PartOf=kiwi.service : `systemctl restart kiwi` ikut me-restart MCP bila MCP sedang jalan.
+#   - MCP tetap bisa dimatikan sendiri: `systemctl stop|disable --now kiwi-mcp` tidak menyentuh Kiwi.
+#   - MCP yang sedang mati TIDAK dinyalakan oleh `restart kiwi`.
+[Unit]
+Description=Kaspin Kiwi MCP (Streamable HTTP, di belakang nginx)
+After=network.target kiwi.service
+PartOf=kiwi.service
+
+[Service]
+User=gallanwidyanto
+Group=gallanwidyanto
+WorkingDirectory=/home/gallanwidyanto/kiwi-tcms/mcp
+EnvironmentFile=/home/gallanwidyanto/kiwi-tcms/deploy/server/mcp.env
+ExecStart=/home/gallanwidyanto/kiwi-tcms/mcp/.venv/bin/kaspin-kiwi-mcp --http --host 127.0.0.1 --port 8765
+Restart=on-failure
+RestartSec=5
+
+# Batas resource: bila MCP melewatinya, hanya MCP yang dihentikan/di-restart, Kiwi aman.
+# Ukur pemakaian nyata dengan `systemctl status kiwi-mcp` (baris Memory:) lalu sesuaikan.
+MemoryMax=200M
+CPUQuota=30%
+Nice=10
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+
+[Install]
+WantedBy=multi-user.target

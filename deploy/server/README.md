@@ -100,12 +100,64 @@ Backup berada di `~/kiwi-backups` (14 hari terakhir). Salin juga ke luar server 
 ## Update aplikasi
 
 ```bash
-cd ~/kiwi-tcms && git pull && git submodule update --init --depth 1
-export PYTHONPATH="$PWD:$PWD/Kiwi:$PWD/deploy/server" DJANGO_SETTINGS_MODULE=kiwi_prod_settings
-.venv/bin/python Kiwi/manage.py migrate
-.venv/bin/python Kiwi/manage.py collectstatic --noinput
-sudo systemctl restart kiwi
+~/kiwi-tcms/deploy/server/update.sh
 ```
+
+Skrip ini menjalankan `git pull`, submodule, `migrate`, `collectstatic`, memperbarui venv MCP, lalu `systemctl restart kiwi` (MCP ikut restart bila sedang jalan).
+
+## Kaspin Kiwi MCP (opsional)
+
+MCP di `mcp/` dijalankan sebagai service terpisah `kiwi-mcp` dengan venv sendiri (`mcp/.venv`), di port 8765 (hanya `127.0.0.1`), dan diakses publik lewat nginx di `https://<domain-kiwi>/mcp`. Pemakaian RAM sekitar 60-90 MB; batas `MemoryMax`/`CPUQuota` ada di unit.
+
+### Pemasangan pertama (sekali)
+
+```bash
+cd ~/kiwi-tcms && git pull
+python3 -m venv mcp/.venv && mcp/.venv/bin/pip install ./mcp        # butuh Python 3.10+
+cp deploy/server/mcp.env.example deploy/server/mcp.env && chmod 600 deploy/server/mcp.env
+nano deploy/server/mcp.env                                          # cek KIWI_URL, ZEBRUNNER_URL, MCP_ALLOWED_HOSTS
+
+sudo cp deploy/server/kiwi-mcp.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now kiwi-mcp
+```
+
+nginx: salin blok `location /mcp` dari `nginx-kiwi.conf` ke konfigurasi yang aktif, dan tambahkan zona rate limit di blok `http`
+(`/etc/nginx/conf.d/mcp-limit.conf`):
+
+```
+limit_req_zone $binary_remote_addr zone=mcp:10m rate=5r/s;
+```
+
+lalu `sudo nginx -t && sudo systemctl reload nginx`. Cek: `curl https://<domain-kiwi>/mcp/health` harus membalas `{"status":"ok",...}`. Membuka `/mcp` di browser menampilkan `406 Not Acceptable` (JSON): itu normal, endpoint ini hanya untuk klien MCP.
+
+### Perintah sehari-hari
+
+| Tujuan | Perintah |
+|---|---|
+| Restart Kiwi **dan** MCP | `sudo systemctl restart kiwi` |
+| Restart hanya MCP | `sudo systemctl restart kiwi-mcp` |
+| Matikan MCP sementara (Kiwi tetap jalan) | `sudo systemctl stop kiwi-mcp` |
+| Matikan MCP permanen (tidak start saat boot) | `sudo systemctl disable --now kiwi-mcp` |
+| Nyalakan lagi | `sudo systemctl enable --now kiwi-mcp` |
+| Lihat pemakaian RAM/CPU | `systemctl status kiwi-mcp` (baris `Memory:`) |
+| Log | `journalctl -u kiwi-mcp -n 100` |
+
+Aturan: `restart kiwi` hanya me-restart MCP yang **sedang jalan** (`PartOf=`). MCP yang dimatikan tidak ikut menyala. Jangan memakai `stop kiwi` lalu `start kiwi` untuk memperbarui: `stop kiwi` ikut menghentikan MCP, dan `start kiwi` tidak menyalakannya lagi. Pakai `restart`, atau jalankan `start kiwi-mcp` setelahnya.
+
+### Verifikasi perilaku systemd (jalankan sekali setelah pasang)
+
+Perilaku `PartOf=` mengikuti dokumentasi systemd dan belum diuji di server ini. Cek dengan tiga langkah:
+
+1. MCP jalan, `sudo systemctl restart kiwi` -> `systemctl status kiwi-mcp` menunjukkan waktu start baru.
+2. `sudo systemctl stop kiwi-mcp`, lalu `sudo systemctl restart kiwi` -> `kiwi-mcp` tetap `inactive`.
+3. `sudo systemctl disable --now kiwi-mcp`, reboot atau `daemon-reload` -> `kiwi` tetap naik, `kiwi-mcp` tidak.
+
+### Keamanan
+
+- Password Kiwi dan token Zebrunner tidak disimpan di server; tiap QA mengirimnya lewat header HTTPS. Jangan mengaktifkan log header di nginx.
+- Host Zebrunner dikunci oleh `ZEBRUNNER_URL`.
+- Endpoint dibatasi rate limit per IP di nginx.
 
 ## Catatan
 
