@@ -43,11 +43,15 @@ def parse_url(url):
     return ZebrunnerUrl(f"{parsed.scheme}://{parsed.netloc}", match.group(1), number("suiteId"), number("caseId"))
 
 
-def build_tree(suites, root_id, with_children=True):
+def build_tree(suites, root_id, with_children=True, with_ancestors=True):
     """Flat suites (parentSuiteId) -> [{id, parent, title}], parents before children.
 
-    root_id=None means every suite. Otherwise: ancestors of root, root, and (optionally)
-    all its descendants.
+    root_id=None means every suite. Otherwise: ancestors of root (unless with_ancestors is
+    False), root, and (optionally) all its descendants.
+
+    Ancestors are only containers so the plan tree keeps its place; their own test cases are
+    NOT part of what the user pointed at. Use with_ancestors=False to get the suites whose
+    cases should be imported.
     """
     by_id = {s["id"]: s for s in suites}
     by_parent = {}
@@ -68,6 +72,8 @@ def build_tree(suites, root_id, with_children=True):
             chain.append(current)
             current = by_id.get(current.get("parentSuiteId"))
         chain.reverse()
+        if not with_ancestors:
+            chain = chain[-1:]
         result = [node(s, chain[i - 1]["id"] if i else None) for i, s in enumerate(chain)]
         queue = [(c, root_id) for c in by_parent.get(root_id, [])] if with_children else []
     while queue:
@@ -172,7 +178,8 @@ async def _fetch_pivot(base_url, username, token, url: ZebrunnerUrl):
         else:
             tree = build_tree(suites, url.suite_id)
             items = []
-            ids = [s["id"] for s in tree]
+            # cases only from the chosen suite and its children; ancestors stay empty plans
+            ids = [s["id"] for s in build_tree(suites, url.suite_id, with_ancestors=False)]
             for start in range(0, len(ids), SUITE_IDS_PER_REQUEST):
                 chunk = ",".join(str(x) for x in ids[start : start + SUITE_IDS_PER_REQUEST])
                 items += [

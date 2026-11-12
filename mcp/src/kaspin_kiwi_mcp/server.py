@@ -95,8 +95,10 @@ async def check_connection(ctx: Context, zebrunner_url: str = "") -> str:
 async def import_from_zebrunner(ctx: Context, url: str, dry_run: bool = True) -> str:
     """Copy test cases from Zebrunner into Kiwi.
 
-    url: a Zebrunner suite URL (.../projects/KEY/test-cases?suiteId=N, copies that suite, its child
-    suites and its parent chain) or a single case URL (...?caseId=N). Without either, the whole project.
+    url: a Zebrunner suite URL (.../projects/KEY/test-cases?suiteId=N) copies the test cases of that
+    suite and all its child suites. Its parent suites are created only as empty plans so the tree keeps
+    its place; their own test cases are NOT imported (give the parent's URL for that). A single case URL
+    (...?caseId=N) copies that case. Without either, the whole project.
     dry_run=true (default) only reports; call again with dry_run=false after the user agrees.
     """
     creds = config.creds_from_context(ctx)
