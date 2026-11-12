@@ -69,23 +69,27 @@ Setelah menyimpan: pastikan JSON valid (`python3 -c "import json,sys; json.load(
 
 Claude Pro/Team juga bisa lewat Settings -> Connectors -> Custom Connector, mengisi URL dan keempat header.
 
-### Codex CLI (`~/.codex/config.toml`)
+### Codex CLI dan ChatGPT desktop (`~/.codex/config.toml`)
 
-Nilai header dibaca dari environment, jadi password tidak tersimpan di file:
+ChatGPT desktop memakai file yang sama dengan Codex CLI, jadi satu config cukup untuk keduanya. Server dipanggil dari laptop.
 
 ```toml
 [mcp_servers.kaspin-kiwi]
 url = "https://<domain-kiwi>/mcp"
 tool_timeout_sec = 120
+http_headers = { X-Kiwi-Username = "<user>", X-Kiwi-Password = "<password>", X-Zebrunner-Username = "<user zebrunner>", X-Zebrunner-Api-Token = "<token>" }
 
-[mcp_servers.kaspin-kiwi.env_http_headers]
-X-Kiwi-Username = "KIWI_USERNAME"
-X-Kiwi-Password = "KIWI_PASSWORD"
-X-Zebrunner-Username = "ZEBRUNNER_USERNAME"
-X-Zebrunner-Api-Token = "ZEBRUNNER_API_TOKEN"
+# Tool yang hanya membaca boleh langsung disetujui. Tool impor sengaja dibiarkan ditanya:
+# layar persetujuan menampilkan dry_run, jadi penulisan ke Kiwi tidak terjadi tanpa sepengetahuanmu.
+[mcp_servers.kaspin-kiwi.tools.check_connection]
+approval_mode = "approve"
+[mcp_servers.kaspin-kiwi.tools.get_import_status]
+approval_mode = "approve"
+[mcp_servers.kaspin-kiwi.tools.get_file_format]
+approval_mode = "approve"
 ```
 
-Lalu export keempat variabel itu di shell sebelum menjalankan `codex`.
+`http_headers` menyimpan password dan token sebagai teks biasa, jadi batasi aksesnya: `chmod 600 ~/.codex/config.toml`. Aplikasi desktop macOS tidak membaca variabel lingkungan dari shell, sehingga `env_http_headers` (nilai header dari variabel lingkungan) hanya praktis untuk Codex CLI yang dijalankan dari terminal.
 
 ### GitHub Copilot (VS Code, `.vscode/mcp.json`) dan Gemini CLI
 
@@ -101,7 +105,7 @@ Gemini CLI (`~/.gemini/settings.json`): kunci `mcpServers.kaspin-kiwi` dengan `h
 
 ### ChatGPT desktop
 
-Dry run import berhasil dijalankan lewat konektor MCP di ChatGPT desktop (satu akun, hasilnya sama dengan klien lain). Cara pemasangan konektor dan apakah penulisan (`dry_run=false`) diizinkan di semua jenis akun **belum didokumentasikan dan belum diuji**. Catatan: konektor ChatGPT dipanggil dari server OpenAI, jadi password Kiwi dan token Zebrunner yang diisi di sana tersimpan di sisi OpenAI, tidak hanya di laptop.
+Lihat bagian Codex di atas: ChatGPT desktop dipasang lewat `~/.codex/config.toml` yang sama. Pratinjau impor terbukti berjalan dengan hasil identik dengan klien lain; penulisan (`dry_run=false`) lewat ChatGPT desktop belum diuji.
 
 ## Contoh prompt
 
