@@ -113,6 +113,9 @@ def test_build_tree_keeps_ancestors_and_children():
         {"id": 3, "parent": 2, "title": "C"},
     ]
     assert build_tree(FLAT, 3, with_children=False)[-1] == {"id": 3, "parent": 2, "title": "C"}
+    # scope for importing cases: the suite and its children, never its ancestors
+    assert [s["id"] for s in build_tree(FLAT, 2, with_ancestors=False)] == [2, 3]
+    assert build_tree(FLAT, 2, with_ancestors=False)[0]["parent"] is None
     assert {s["id"] for s in build_tree(FLAT, None)} == {1, 2, 3, 4, 9}
     with pytest.raises(ZebrunnerError):
         build_tree(FLAT, 77)
@@ -171,15 +174,19 @@ def fake_zebrunner():
         seen["headers"].append((h.get("x-zebrunner-username"), h.get("x-zebrunner-api-token")))
         return json.dumps({"items": FLAT, "_meta": {}})
 
+    cases = [_zcase("K-ANC", 1), _zcase("K-1", 2), _zcase("K-X", 2, deleted=True), _zcase("K-2", 3)]
+
     @fake.tool()
     def list_test_cases(projectKey: str, filter: str = "", includeFields: str = "", maxPageSize: int = 10,
                         pageToken: str = "") -> str:  # fmt: skip
         seen["filters"].append((filter, includeFields))
         if filter == "id = 898":
             return json.dumps({"items": [_zcase("K-898", 3)], "_meta": {}})
-        if pageToken == "p2":
-            return json.dumps({"items": [_zcase("K-2", 3)], "_meta": {}})
-        return json.dumps({"items": [_zcase("K-1", 2), _zcase("K-X", 2, deleted=True)], "_meta": {"nextPageToken": "p2"}})
+        ids = {int(x) for x in filter[filter.index("(") + 1 : -1].split(",")}
+        matched = [c for c in cases if c["testSuite"]["id"] in ids]
+        start = int(pageToken or 0)  # the fake pages one item at a time to exercise paging
+        meta = {"nextPageToken": str(start + 1)} if start + 1 < len(matched) else {}
+        return json.dumps({"items": matched[start : start + 1], "_meta": meta})
 
     port = _free_port()
     srv = uvicorn.Server(uvicorn.Config(fake.streamable_http_app(), host="127.0.0.1", port=port, log_level="error"))
@@ -197,11 +204,12 @@ def fake_zebrunner():
 def test_fetch_suite_over_http_sends_headers_pages_and_keeps_ancestors(fake_zebrunner):
     base, seen = fake_zebrunner
     pivot = asyncio.run(fetch_pivot(base, "shared-user", "my-token", ZebrunnerUrl(base, "K", 2, None)))
-    assert [c["key"] for c in pivot["cases"]] == ["K-1", "K-2"]  # deleted dropped, 2 pages joined
+    # K-ANC sits in ancestor suite A: A stays as an empty plan, its case is not imported
+    assert [c["key"] for c in pivot["cases"]] == ["K-1", "K-2"]  # deleted dropped, pages joined
     assert pivot["cases"][0]["steps"] == [["do", "see"]] and pivot["cases"][0]["priority"] == "High"
     assert [s["title"] for s in pivot["suites"]] == ["A", "B", "C"]  # ancestor A, suite B, child C
     assert seen["headers"][0] == ("shared-user", "my-token")
-    assert seen["filters"][0] == ("testSuite.id IN (1,2,3)", "steps")
+    assert seen["filters"][0] == ("testSuite.id IN (2,3)", "steps")  # not 1: that is the ancestor
 
 
 def test_fetch_single_case_keeps_suite_chain(fake_zebrunner):

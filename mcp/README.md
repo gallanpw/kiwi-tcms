@@ -9,7 +9,7 @@ Cara kerja: server MCP ini di-hosting di server Kiwi (`https://<domain-kiwi>/mcp
 | Tool | Fungsi |
 |---|---|
 | `check_connection(zebrunner_url?)` | Cek login Kiwi dan akses Zebrunner. Jalankan ini pertama kali. |
-| `import_from_zebrunner(url, dry_run=true)` | URL suite (`?suiteId=`): suite itu + semua child + suite induknya. URL case (`?caseId=`): satu case + rantai suite induknya. |
+| `import_from_zebrunner(url, dry_run=true)` | URL suite (`?suiteId=`): case dari suite itu dan semua child-nya; suite induknya hanya dibuat sebagai plan kosong (case milik induk tidak ikut, tempel URL induknya untuk itu). URL case (`?caseId=`): satu case + plan kosong untuk rantai suite induknya. |
 | `get_file_format()` | Format kolom CSV/XLSX/JSON, supaya AI bisa memetakan spreadsheet apa pun. |
 | `import_cases(cases, product, dry_run=true)` | Import data langsung (maks 100 case per panggilan). |
 | `import_csv_text(csv_text, product, dry_run=true)` | Import isi CSV (maks 100 case). |
