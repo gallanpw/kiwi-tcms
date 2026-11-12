@@ -112,6 +112,7 @@ Satu baris per step. Kolom:
 - baris pertama tiap case membawa data case; baris berikutnya hanya `key`, `step_no`, `action`, `expected`
 - `priority`: `High`, `Medium`, `Low`, `Trivial`, `Not set`; `draft`: `yes`/`no`
 - `key` wajib dan unik
+- contoh siap pakai: `mcp/examples/import-sample.csv` dan `import-sample.xlsx` (4 case, product `MCPTEST`)
 - JSON: daftar objek case dengan field yang sama (`steps` berisi `{action, expected}`), atau bentuk lama `scripts/zebrunner_*_suite.json`
 
 ## Mode lokal (cadangan, tanpa server)

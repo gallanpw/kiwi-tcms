@@ -272,6 +272,19 @@ def test_import_dry_run_writes_nothing():
     assert report["cases_new"] == ["KPPOS-1", "KPPOS-2"] and report["plans_new"] == 2
 
 
+def test_dry_run_warns_when_product_would_be_created():
+    from kaspin_kiwi_mcp.importer import format_report
+
+    kiwi = FakeKiwi()
+    report = import_pivot(kiwi, PIVOT, dry_run=True)
+    assert report["product_new"] is True
+    assert "WARNING: product 'KPPOS' does not exist" in format_report(report) and "will be CREATED" in format_report(report)
+    real = import_pivot(kiwi, PIVOT, dry_run=False)
+    assert "was CREATED" in format_report(real)
+    again = import_pivot(kiwi, PIVOT, dry_run=True)  # product exists now: no warning
+    assert again["product_new"] is False and "WARNING" not in format_report(again)
+
+
 def test_import_creates_then_is_idempotent():
     kiwi = FakeKiwi()
     report = import_pivot(kiwi, PIVOT, dry_run=False)
