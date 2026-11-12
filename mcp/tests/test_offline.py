@@ -421,8 +421,28 @@ def test_upload_size_limit(tmp_path, monkeypatch):
 
 def test_hosted_server_has_no_file_path_tools():
     names = {t.name for t in asyncio.run(server.mcp.list_tools())}
-    assert {"import_from_zebrunner", "import_cases", "create_upload_link", "get_import_status"} <= names
+    assert {"import_from_zebrunner", "import_cases", "import_csv_text", "get_import_status"} <= names
     assert not names & {"import_file", "zebrunner_backup"}  # would read/write the server's disk
+    # upload links add a public URL, so they exist only when MCP_ENABLE_UPLOAD is set
+    assert not names & {"create_upload_link", "import_uploaded_file"}
+    assert [r.path for r in server.mcp._custom_starlette_routes] == ["/mcp/health"]
+
+
+def test_upload_tools_and_route_register_only_on_request():
+    from mcp.server.fastmcp import FastMCP
+
+    app = FastMCP("t")
+    server._register_upload(app)
+    assert {"create_upload_link", "import_uploaded_file"} <= {t.name for t in asyncio.run(app.list_tools())}
+    assert [r.path for r in app._custom_starlette_routes] == ["/mcp/upload/{token}"]
+
+
+def test_server_says_it_imports_into_kiwi_and_never_runs_tests():
+    # clients confused "dry run" with a test execution and picked the Zebrunner MCP instead
+    text = server.mcp.instructions
+    assert "INTO Kiwi" in text and "never runs tests" in text and "dry run" in text
+    desc = {t.name: t.description for t in asyncio.run(server.mcp.list_tools())}["import_from_zebrunner"]
+    assert "INTO Kiwi" in desc and "NOT a test execution" in desc
 
 
 def test_print_config_uses_absolute_python(capsys):
