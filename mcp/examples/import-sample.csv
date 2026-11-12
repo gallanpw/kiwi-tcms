@@ -1,0 +1,7 @@
+﻿key,suite_path,title,priority,draft,description,preconditions,postconditions,step_no,action,expected
+MCPTEST-1,Contoh Impor > Login,Login berhasil dengan akun valid,High,no,Contoh case dengan dua step dan hasil yang diharapkan.,Akun terdaftar dan aktif.,Sesi pengguna tersimpan.,1,Buka halaman login,Form login tampil
+MCPTEST-1,,,,,,,,2,Isi email dan password valid lalu klik Masuk,Masuk ke dashboard
+MCPTEST-2,Contoh Impor > Login,Login gagal dengan password salah,Medium,no,,,,1,Isi email valid dan password salah lalu klik Masuk,"Pesan error tampil, tetap di halaman login"
+MCPTEST-3,Contoh Impor > Profil,Ubah nama profil (masih draft),Low,yes,,,,1,Buka menu Profil,
+MCPTEST-3,,,,,,,,2,Ubah nama lalu simpan,Nama baru tampil
+MCPTEST-4,Contoh Impor,Case langsung di suite induk,Trivial,no,,,,1,Buka aplikasi,Halaman utama tampil

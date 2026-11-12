@@ -119,7 +119,8 @@ def get_file_format() -> str:
 async def import_cases(ctx: Context, cases: list[dict], product: str, dry_run: bool = True) -> str:
     """Import up to 100 test cases given as data (see get_file_format for the fields).
 
-    product: Kiwi product name. For bigger files use create_upload_link instead.
+    product: Kiwi product name; an unknown name creates a NEW product (the dry run warns about it).
+    For bigger files use create_upload_link instead.
     """
     if len(cases) > MAX_INLINE_CASES:
         raise ValueError(f"Send at most {MAX_INLINE_CASES} cases per call (got {len(cases)}); or use create_upload_link.")
@@ -153,7 +154,8 @@ async def create_upload_link(ctx: Context) -> str:
 async def import_uploaded_file(ctx: Context, upload_id: str, product: str = "", dry_run: bool = True) -> str:
     """Import the file uploaded through create_upload_link.
 
-    product: Kiwi product name; required for CSV/XLSX and JSON lists.
+    product: Kiwi product name; required for CSV/XLSX and JSON lists. An unknown name creates a NEW
+    product (the dry run warns about it).
     """
     creds = config.creds_from_context(ctx)
     path, _name = uploads.take(upload_id, creds.kiwi[0])

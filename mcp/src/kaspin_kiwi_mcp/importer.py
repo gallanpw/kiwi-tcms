@@ -40,7 +40,7 @@ def case_text(case):
 
 
 def new_report(pivot, dry_run):
-    return {"product": pivot["product"], "dry_run": dry_run, "plans_new": 0, "cases_new": [],
+    return {"product": pivot["product"], "dry_run": dry_run, "product_new": False, "plans_new": 0, "cases_new": [],
             "cases_existing": [], "total": len(pivot["cases"]), "processed": 0}  # fmt: skip
 
 
@@ -62,6 +62,7 @@ def import_pivot(kiwi, pivot, dry_run=True, report=None):
     priority = {p: lookup("Priority.filter", {"value": v}, "Priority") for p, v in PRIORITY.items()}
 
     product = kiwi.first("Product.filter", {"name": pivot["product"]})
+    report["product_new"] = product is None  # a typo in the name would silently create a product
     if not product and not dry_run:
         classification = kiwi.first("Classification.filter", {"name": CLASSIFICATION}) or kiwi.call(
             "Classification.create", {"name": CLASSIFICATION}
@@ -139,6 +140,9 @@ def format_report(report):
         f"cases {'to create' if report['dry_run'] else 'created'}: {len(new)}",
         f"cases already in Kiwi (skipped): {len(old)}",
     ]
+    if report["product_new"]:
+        verb = "will be CREATED" if report["dry_run"] else "was CREATED"
+        lines.insert(1, f"WARNING: product '{report['product']}' does not exist in Kiwi and {verb}. Check the spelling.")
     if new:
         lines.append("new: " + ", ".join(new[:15]) + (" ..." if len(new) > 15 else ""))
     if report["dry_run"] and new:
