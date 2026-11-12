@@ -11,10 +11,8 @@ Cara kerja: server MCP ini di-hosting di server Kiwi (`https://<domain-kiwi>/mcp
 | `check_connection(zebrunner_url?)` | Cek login Kiwi dan akses Zebrunner. Jalankan ini pertama kali. |
 | `import_from_zebrunner(url, dry_run=true)` | URL suite (`?suiteId=`): case dari suite itu dan semua child-nya; suite induknya hanya dibuat sebagai plan kosong (case milik induk tidak ikut, tempel URL induknya untuk itu). URL case (`?caseId=`): satu case + plan kosong untuk rantai suite induknya. |
 | `get_file_format()` | Format kolom CSV/XLSX/JSON, supaya AI bisa memetakan spreadsheet apa pun. |
-| `import_cases(cases, product, dry_run=true)` | Import data langsung (maks 100 case per panggilan). |
+| `import_cases(cases, product, dry_run=true)` | Import data langsung (maks 100 case per panggilan; file lebih besar dikirim bertahap). |
 | `import_csv_text(csv_text, product, dry_run=true)` | Import isi CSV (maks 100 case). |
-| `create_upload_link()` | Link upload sekali pakai (15 menit, maks 5 MB) untuk file besar. |
-| `import_uploaded_file(upload_id, product, dry_run=true)` | Import file yang sudah diunggah lewat link. |
 | `get_import_status(job_id)` | Progres import besar. |
 
 Aturan main:
@@ -44,18 +42,30 @@ claude mcp add --transport http -s user kaspin-kiwi https://<domain-kiwi>/mcp \
 
 ### Claude Desktop (butuh Node.js, sama seperti config Zebrunner)
 
+> **Jangan memakai format `"type": "http"` di sini.** Itu format Claude Code. `claude_desktop_config.json` tidak mendukung entri HTTP langsung, sehingga entrinya diam-diam diabaikan dan server tidak muncul. Claude Desktop harus lewat jembatan `mcp-remote`.
+
+Salin nilai `command` dari entri `zebrunner` kamu yang sudah berjalan (supaya path `npx` ikut benar), lalu:
+
 ```json
 "kaspin-kiwi": {
-  "command": "npx",
+  "command": "<sama dengan command di entri zebrunner>",
   "args": [
     "-y", "mcp-remote@latest", "https://<domain-kiwi>/mcp",
-    "--header", "X-Kiwi-Username:<user>",
-    "--header", "X-Kiwi-Password:<password>",
-    "--header", "X-Zebrunner-Username:<user zebrunner>",
-    "--header", "X-Zebrunner-Api-Token:<token>"
-  ]
+    "--header", "X-Kiwi-Username:${KIWI_USERNAME}",
+    "--header", "X-Kiwi-Password:${KIWI_PASSWORD}",
+    "--header", "X-Zebrunner-Username:${ZEBRUNNER_USERNAME}",
+    "--header", "X-Zebrunner-Api-Token:${ZEBRUNNER_API_TOKEN}"
+  ],
+  "env": {
+    "KIWI_USERNAME": "<user>", "KIWI_PASSWORD": "<password>",
+    "ZEBRUNNER_USERNAME": "<user zebrunner>", "ZEBRUNNER_API_TOKEN": "<token>"
+  }
 }
 ```
+
+Bentuk `${...}` menjaga password tidak tampil di daftar proses. Kalau gagal, tulis nilainya langsung di `args` seperti entri Zebrunner (`X-Kiwi-Password:isinya`).
+
+Setelah menyimpan: pastikan JSON valid (`python3 -c "import json,sys; json.load(open(sys.argv[1])); print('JSON valid')" "$HOME/Library/Application Support/Claude/claude_desktop_config.json"`), lalu **tutup total dengan Cmd+Q** dan buka lagi. Kalau tidak muncul, log ada di `~/Library/Logs/Claude/mcp-server-kaspin-kiwi.log` (hapus password/token sebelum membagikannya).
 
 Claude Pro/Team juga bisa lewat Settings -> Connectors -> Custom Connector, mengisi URL dan keempat header.
 
@@ -91,17 +101,25 @@ Gemini CLI (`~/.gemini/settings.json`): kunci `mcpServers.kaspin-kiwi` dengan `h
 
 ### ChatGPT desktop
 
-**Belum didukung.** Connector kustom ChatGPT memakai OAuth atau tanpa autentikasi dan, sepengetahuan kami, tidak bisa mengirim header. Pengguna GPT memakai Codex CLI.
+Dry run import berhasil dijalankan lewat konektor MCP di ChatGPT desktop (satu akun, hasilnya sama dengan klien lain). Cara pemasangan konektor dan apakah penulisan (`dry_run=false`) diizinkan di semua jenis akun **belum didokumentasikan dan belum diuji**. Catatan: konektor ChatGPT dipanggil dari server OpenAI, jadi password Kiwi dan token Zebrunner yang diisi di sana tersimpan di sisi OpenAI, tidak hanya di laptop.
 
 ## Contoh prompt
 
-> Pakai kaspin kiwi: cek koneksi, lalu dry run import dari https://<workspace>.zebrunner.com/projects/KPWEB2/test-cases?suiteId=1616
+**Sebut nama MCP-nya dan "Kiwi".** Kalau hanya menulis "dry run", sebagian AI mengira itu uji coba menjalankan test case dan memakai MCP Zebrunner (bahkan menawarkan membuat test run). Di sini "dry run" berarti pratinjau impor tanpa menulis.
 
-> Import test case ini: https://<workspace>.zebrunner.com/projects/KPPOS/test-cases?caseId=898
+> Pakai MCP kaspin-kiwi: pratinjau impor (dry run, tanpa menulis) test case dari https://<workspace>.zebrunner.com/projects/KPWEB2/test-cases?suiteId=1616 ke Kiwi.
 
-> Baca file test-cases.csv ini dan import ke product KPWEB2 (dry run dulu)
+> Pakai kaspin-kiwi: impor test case ini ke Kiwi: https://<workspace>.zebrunner.com/projects/KPPOS/test-cases?caseId=898 (pratinjau dulu)
 
-File kecil (sampai sekitar 50 case) cukup ditempel atau dilampirkan di chat; AI memanggil `import_cases`. File besar (sampai 500+ case): minta AI membuat link upload, unggah file di browser (atau AI terminal menjalankan `curl`), lalu `import_uploaded_file`. Data tidak lewat konteks AI sehingga tidak ada risiko berubah atau terpotong.
+> Pakai kaspin-kiwi: impor file test-cases.csv yang saya lampirkan ke product KPWEB2 (pratinjau dulu)
+
+Cek laporan pratinjau (jumlah plan dan case, peringatan bila product akan dibuat), lalu minta AI melanjutkan dengan `dry_run=false`.
+
+File yang dilampirkan di chat dibaca AI lalu dikirim sebagai data (`import_cases` / `import_csv_text`, maks 100 case per panggilan). File yang lebih besar dikirim bertahap; aman karena case yang sudah ada dilewati. Setelah batch terakhir, cocokkan jumlah dibuat + dilewati dengan jumlah baris file. Untuk file sangat besar, data yang melewati AI memakan banyak token dan bisa tersalin kurang tepat; gunakan mode lokal (`import_file`) atau, bila perlu, link upload (opsional, di bawah).
+
+### Link upload (opsional, default mati)
+
+Server dapat menyediakan link upload sekali pakai (15 menit, maks 5 MB) untuk file besar, tanpa melewati AI. Fitur ini menambah satu URL publik, jadi **tidak aktif** kecuali `MCP_ENABLE_UPLOAD=1` di `mcp.env` server. Bila aktif, tersedia tool `create_upload_link()` dan `import_uploaded_file(upload_id, product, dry_run=true)`.
 
 ## Format CSV / XLSX
 
@@ -135,11 +153,16 @@ Pemasangan di server (systemd, nginx, batas resource): lihat `deploy/server/READ
 
 ## Status verifikasi
 
-Sudah diuji:
-- 24 tes otomatis, termasuk server Zebrunner MCP tiruan lewat HTTP (header, paging, rantai suite induk).
-- Uji penuh lokal: Kiwi sungguhan + server MCP mode HTTP + klien MCP yang mengirim header. Mencakup import suite (40 case via job), ulang tanpa duplikat, URL satu case, `import_cases`, CSV, upload 60 case, isolasi antar-user, dan penolakan host Zebrunner lain.
+Terbukti di server nyata (`<domain-kiwi>`):
+- koneksi lewat nginx + HTTPS, service systemd dengan batas resource, `restart kiwi` ikut me-restart MCP
+- autentikasi Zebrunner (header) dan login Kiwi per pengguna
+- baca (pratinjau) dan **tulis** ke Kiwi: plan bertingkat, kategori, case, tag; idempoten; job latar belakang untuk suite besar (109 case dalam sekitar 1,5 menit)
+- pratinjau suite yang sama memberi hasil identik di Claude Code, Codex CLI, Claude Desktop, dan ChatGPT desktop
+
+Tes otomatis: 27 tes, termasuk server Zebrunner MCP tiruan lewat HTTP.
 
 **Belum** diuji:
-- Zebrunner sungguhan (alur autentikasi header mengikuti dokumentasi Zebrunner).
-- systemd, nginx, dan HTTPS di server nyata.
-- Tiap aplikasi AI (Claude Desktop, Codex, Copilot, Gemini); format config mengikuti dokumentasi vendor.
+- penulisan lewat Codex CLI, Claude Desktop, dan ChatGPT desktop (baru pratinjau)
+- lampiran file di chat (`import_csv_text` / `import_cases` pada file nyata) dan jalur `.xlsx`
+- akun Kiwi QA biasa (non-admin): izin yang dibutuhkan untuk membuat plan/kategori/case
+- Copilot dan Gemini CLI

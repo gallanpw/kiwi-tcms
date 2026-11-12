@@ -25,14 +25,16 @@ from .kiwi import KiwiClient
 logging.getLogger("httpx").setLevel(logging.WARNING)  # request URLs are noise in the client log
 
 BACKGROUND_FROM = 30  # more cases than this -> run as a background job
-MAX_INLINE_CASES = 100  # import_cases / import_csv_text; bigger files go through upload
+MAX_INLINE_CASES = 100  # import_cases / import_csv_text; bigger files are sent in batches
 MAX_CASES = 1000
 
 mcp = FastMCP(
     "kaspin-kiwi",
     instructions=(
-        "Copy Zebrunner test cases (suite URL or single case URL) into Kiwi TCMS, or import CSV/XLSX/JSON. "
-        "Always run with dry_run=true first, show the report, and only write (dry_run=false) after the user agrees. "
+        "Imports test cases INTO Kiwi TCMS: copy them from Zebrunner (suite URL or single case URL), or from "
+        "CSV/XLSX/JSON data. This server never runs tests and never creates test runs in Zebrunner. "
+        "'dry run' here means a preview of the import: nothing is written. "
+        "Always preview first (dry_run=true), show the report, and write (dry_run=false) only after the user agrees. "
         "Call get_file_format before building case data from a user's spreadsheet."
     ),
     stateless_http=True,  # credentials ride on every request; restarts do not break client sessions
@@ -93,7 +95,10 @@ async def check_connection(ctx: Context, zebrunner_url: str = "") -> str:
 
 @mcp.tool()
 async def import_from_zebrunner(ctx: Context, url: str, dry_run: bool = True) -> str:
-    """Copy test cases from Zebrunner into Kiwi.
+    """Import (copy/migrate/back up) test cases from Zebrunner INTO Kiwi TCMS.
+
+    Not for running tests or creating test runs. dry_run=true is a preview of the import (nothing is
+    written); it is NOT a test execution.
 
     url: a Zebrunner suite URL (.../projects/KEY/test-cases?suiteId=N) copies the test cases of that
     suite and all its child suites. Its parent suites are created only as empty plans so the tree keeps
@@ -112,6 +117,8 @@ async def import_from_zebrunner(ctx: Context, url: str, dry_run: bool = True) ->
 @mcp.tool()
 def get_file_format() -> str:
     """Describe the CSV/XLSX/JSON test case format accepted by the import tools."""
+    if UPLOAD_ENABLED:
+        return FORMAT_HELP + "\nLarge files can also go through create_upload_link, then import_uploaded_file."
     return FORMAT_HELP
 
 
@@ -120,10 +127,11 @@ async def import_cases(ctx: Context, cases: list[dict], product: str, dry_run: b
     """Import up to 100 test cases given as data (see get_file_format for the fields).
 
     product: Kiwi product name; an unknown name creates a NEW product (the dry run warns about it).
-    For bigger files use create_upload_link instead.
+    Bigger files: send them in several calls of up to 100 cases (existing keys are skipped, so
+    re-sending is safe).
     """
     if len(cases) > MAX_INLINE_CASES:
-        raise ValueError(f"Send at most {MAX_INLINE_CASES} cases per call (got {len(cases)}); or use create_upload_link.")
+        raise ValueError(f"Send at most {MAX_INLINE_CASES} cases per call (got {len(cases)}); split them into batches.")
     pivot = cases_to_pivot(cases, product)
     return await _run_import(config.creds_from_context(ctx), pivot, dry_run)
 
@@ -133,37 +141,8 @@ async def import_csv_text(ctx: Context, csv_text: str, product: str, dry_run: bo
     """Import test cases from CSV text (columns in get_file_format), up to 100 cases."""
     pivot = rows_to_pivot(csv.DictReader(io.StringIO(csv_text.lstrip("﻿"))), product)
     if len(pivot["cases"]) > MAX_INLINE_CASES:
-        raise ValueError(f"Send at most {MAX_INLINE_CASES} cases per call; use create_upload_link for bigger files.")
+        raise ValueError(f"Send at most {MAX_INLINE_CASES} cases per call; split bigger files into batches.")
     return await _run_import(config.creds_from_context(ctx), pivot, dry_run)
-
-
-@mcp.tool()
-async def create_upload_link(ctx: Context) -> str:
-    """Get a one-time link (valid 15 minutes) to upload a CSV/XLSX/JSON file of any size up to 5 MB.
-
-    Give the link to the user to open in a browser, or upload it yourself with
-    `curl --data-binary @file -H "X-Filename: file.xlsx" <link>`. Then call import_uploaded_file.
-    """
-    creds = config.creds_from_context(ctx)
-    token = uploads.create(creds.kiwi[0])
-    link = f"{config.public_url(ctx)}/upload/{token}"
-    return f"Upload link (valid {uploads.TTL // 60} minutes, one file): {link}\nupload_id: {token}"
-
-
-@mcp.tool()
-async def import_uploaded_file(ctx: Context, upload_id: str, product: str = "", dry_run: bool = True) -> str:
-    """Import the file uploaded through create_upload_link.
-
-    product: Kiwi product name; required for CSV/XLSX and JSON lists. An unknown name creates a NEW
-    product (the dry run warns about it).
-    """
-    creds = config.creds_from_context(ctx)
-    path, _name = uploads.take(upload_id, creds.kiwi[0])
-    try:
-        pivot = await _thread(read_pivot, path, product)
-    finally:
-        path.unlink(missing_ok=True)
-    return await _run_import(creds, pivot, dry_run)
 
 
 @mcp.tool()
@@ -181,7 +160,44 @@ async def health(_request):
     return JSONResponse({"status": "ok", "service": "kaspin-kiwi"})
 
 
-mcp.custom_route("/mcp/upload/{token}", methods=["GET", "POST"])(uploads.handle)
+def _register_upload(app):
+    """One-time upload links for big files. Off by default: it adds a public URL to the server.
+    Enable with MCP_ENABLE_UPLOAD=1."""
+
+    @app.tool()
+    async def create_upload_link(ctx: Context) -> str:
+        """Get a one-time link (valid 15 minutes) to upload a CSV/XLSX/JSON file of any size up to 5 MB.
+
+        Give the link to the user to open in a browser, or upload it yourself with
+        `curl --data-binary @file -H "X-Filename: file.xlsx" <link>`. Then call import_uploaded_file.
+        """
+        creds = config.creds_from_context(ctx)
+        token = uploads.create(creds.kiwi[0])
+        link = f"{config.public_url(ctx)}/upload/{token}"
+        return f"Upload link (valid {uploads.TTL // 60} minutes, one file): {link}\nupload_id: {token}"
+
+
+    @app.tool()
+    async def import_uploaded_file(ctx: Context, upload_id: str, product: str = "", dry_run: bool = True) -> str:
+        """Import the file uploaded through create_upload_link.
+
+        product: Kiwi product name; required for CSV/XLSX and JSON lists. An unknown name creates a NEW
+        product (the dry run warns about it).
+        """
+        creds = config.creds_from_context(ctx)
+        path, _name = uploads.take(upload_id, creds.kiwi[0])
+        try:
+            pivot = await _thread(read_pivot, path, product)
+        finally:
+            path.unlink(missing_ok=True)
+        return await _run_import(creds, pivot, dry_run)
+
+    app.custom_route("/mcp/upload/{token}", methods=["GET", "POST"])(uploads.handle)
+
+
+UPLOAD_ENABLED = os.environ.get("MCP_ENABLE_UPLOAD", "").strip().lower() in ("1", "true", "yes")
+if UPLOAD_ENABLED:
+    _register_upload(mcp)
 
 
 def _register_local_tools():

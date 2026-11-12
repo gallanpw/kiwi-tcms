@@ -213,5 +213,6 @@ JSON: a list of case objects with the fields above, e.g.
   [{"key": "K-1", "suite_path": "Owner > Login", "title": "Login ok", "priority": "High",
     "steps": [{"action": "Open app", "expected": ""}, {"action": "Tap login", "expected": "Home"}]}]
 
-Small files (up to ~50 cases): pass them to import_cases / import_csv_text.
-Larger files: create_upload_link, upload the file, then import_uploaded_file."""
+Send at most 100 cases per call to import_cases / import_csv_text. A bigger file goes in several
+batches (re-sending a case is safe: existing keys are skipped). After the last batch, check that
+created + skipped equals the number of cases in the user's file."""
