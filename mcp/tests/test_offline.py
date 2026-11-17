@@ -6,10 +6,12 @@ import time
 
 import pytest
 
-from kaspin_kiwi_mcp import config, jobs, server, uploads
-from kaspin_kiwi_mcp.formats import FormatError, cases_to_pivot, read_pivot, rows_to_pivot, write_pivot
-from kaspin_kiwi_mcp.importer import case_text, import_pivot, new_report
-from kaspin_kiwi_mcp.zebrunner import (
+from kaspin_kiwi_mcp import server
+from kaspin_kiwi_mcp.core import config, jobs
+from kaspin_kiwi_mcp.backup_test_case import uploads
+from kaspin_kiwi_mcp.backup_test_case.formats import FormatError, cases_to_pivot, read_pivot, rows_to_pivot, write_pivot
+from kaspin_kiwi_mcp.backup_test_case.importer import case_text, import_pivot, new_report
+from kaspin_kiwi_mcp.backup_test_case.zebrunner import (
     ZebrunnerError,
     ZebrunnerUrl,
     _explain,
@@ -273,7 +275,7 @@ def test_import_dry_run_writes_nothing():
 
 
 def test_dry_run_warns_when_product_would_be_created():
-    from kaspin_kiwi_mcp.importer import format_report
+    from kaspin_kiwi_mcp.backup_test_case.importer import format_report
 
     kiwi = FakeKiwi()
     report = import_pivot(kiwi, PIVOT, dry_run=True)
