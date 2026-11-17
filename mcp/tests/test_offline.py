@@ -1,8 +1,11 @@
 import asyncio
+import csv
+import io
 import json
 import socket
 import threading
 import time
+from pathlib import Path
 
 import pytest
 
@@ -10,6 +13,9 @@ from kaspin_kiwi_mcp import server
 from kaspin_kiwi_mcp.core import config, jobs
 from kaspin_kiwi_mcp.backup_test_case import uploads
 from kaspin_kiwi_mcp.backup_test_case.formats import FormatError, cases_to_pivot, read_pivot, rows_to_pivot, write_pivot
+from kaspin_kiwi_mcp.backup_test_case.formats import (
+    CREATE_COLUMNS, CREATE_EXTRA_COLUMNS, CREATE_FORMAT_HELP, csv_text_to_rows, group_create_rows,
+)
 from kaspin_kiwi_mcp.backup_test_case.importer import case_text, import_pivot, new_report
 from kaspin_kiwi_mcp.backup_test_case.zebrunner import (
     ZebrunnerError,
@@ -778,4 +784,384 @@ def test_create_background_forwards_import_options(tool_kiwi, monkeypatch):
 def test_hosted_server_lists_search_and_create_with_old_tools():
     names = {t.name for t in asyncio.run(server.mcp.list_tools())}
     assert names == {"check_connection", "import_from_zebrunner", "get_file_format", "import_cases",
-                     "import_csv_text", "get_import_status", "search_test_case", "create_test_case"}
+                     "import_csv_text", "get_import_status", "search_test_case", "create_test_case",
+                     "create_test_case_csv", "get_create_format"}
+
+
+# ---------------------------------------------------------- creation from tables
+
+
+def _create_table_text(rows, columns=CREATE_COLUMNS, delimiter=","):
+    stream = io.StringIO(newline="")
+    writer = csv.DictWriter(stream, fieldnames=columns, delimiter=delimiter, lineterminator="\n")
+    writer.writeheader()
+    writer.writerows(rows)
+    return stream.getvalue()
+
+
+@pytest.mark.parametrize("suite_header", ["Suite Path", "SUITE--PATH", "suite__ path"])
+def test_create_header_normalization(suite_header):
+    text = f"\ufeff\n\n {suite_header} , TITLE ,Description,postconditions, STEP NO \n A > B , Case , before , after ,1\n"
+    rows = csv_text_to_rows(text)
+    assert list(rows[0]) == ["suite_path", "title", "description", "postconditions", "step_no"]
+
+
+@pytest.mark.parametrize("delimiter", [",", ";", "\t"])
+def test_create_delimiters_multiline_and_cell_whitespace(delimiter):
+    rows = [{"suite_path": " A > B ", "title": " Case ", "description": " First line\nSecond line ",
+             "action": " open, click; tab\tthen\nnext ", "expected": " Keep  inner spaces "}]
+    text = _create_table_text(rows, delimiter=delimiter)
+    cases = group_create_rows(csv_text_to_rows(text))
+    assert cases == group_create_rows(csv_text_to_rows(_create_table_text(rows)))
+    assert cases[0]["suite_path"] == "A > B" and cases[0]["title"] == "Case"
+    assert cases[0]["description"] == "First line\nSecond line"
+    assert cases[0]["steps"] == [{"action": "open, click; tab\tthen\nnext", "expected": "Keep  inner spaces"}]
+
+
+@pytest.mark.parametrize("header", ["suite_path,title,unknown,judul", "suite_path,wrong", "title,wrong"])
+def test_create_unknown_header_lists_accepted_columns(header):
+    with pytest.raises(FormatError) as exc:
+        csv_text_to_rows(header + "\n")
+    assert "Unknown columns:" in str(exc.value)
+    for unknown in ("wrong",) if "wrong" in header else ("unknown", "judul"):
+        assert unknown in str(exc.value)
+    for column in CREATE_COLUMNS + CREATE_EXTRA_COLUMNS:
+        assert column in str(exc.value)
+
+
+@pytest.mark.parametrize("missing", ["title", "suite_path"])
+def test_create_missing_header_lists_accepted_columns(missing):
+    columns = [c for c in CREATE_COLUMNS if c != missing]
+    with pytest.raises(FormatError) as exc:
+        csv_text_to_rows(",".join(columns) + "\n")
+    assert f"Missing required columns: {missing}." in str(exc.value)
+    assert ", ".join(CREATE_COLUMNS + CREATE_EXTRA_COLUMNS) in str(exc.value)
+
+
+def test_create_duplicate_normalized_header():
+    with pytest.raises(FormatError, match="Duplicate columns: suite_path"):
+        csv_text_to_rows("suite_path,title,Suite-Path\n")
+
+
+@pytest.mark.parametrize("text", ['suite_path,title,action\nA,Case,"unclosed', 'suite_path,title\nA,Case,extra'])
+def test_create_malformed_csv_rejected(text):
+    with pytest.raises(FormatError):
+        csv_text_to_rows(text)
+
+
+def test_group_create_rows_steps_blank_rows_and_optional_extras():
+    rows = [
+        {"suite_path": "A", "title": "First", "key": " K-1 ", "action": "one", "step_no": 99},
+        {},
+        {"action": "two", "expected": "result", "key": "K-1", "step_no": 1},
+        {"expected": "three", "key": ""},
+        {"suite_path": "A", "title": "Second"},
+        {"title": None, "action": " "},
+    ]
+    cases = group_create_rows(rows)
+    assert len(cases) == 2 and [len(c["steps"]) for c in cases] == [3, 0]
+    assert cases[0]["key"] == "K-1" and "key" not in cases[1]
+    assert cases[0]["steps"] == [
+        {"action": "one", "expected": ""}, {"action": "two", "expected": "result"},
+        {"action": "", "expected": "three"},
+    ]
+
+
+def test_group_create_step_before_case_row_number():
+    rows = csv_text_to_rows("suite_path,title,action\n\n,,Open\n")
+    with pytest.raises(FormatError) as exc:
+        group_create_rows(rows)
+    assert str(exc.value) == "Row 3: step row without a case; the first row of a case needs title and suite_path"
+
+
+@pytest.mark.parametrize("field", ["suite_path", "priority", "draft", "description", "preconditions", "postconditions", "key"])
+def test_group_create_continuation_rejects_case_cells(field):
+    rows = [{"suite_path": "A", "title": "Case", "key": "K-1"}, {}, {"action": "Next", field: "different"}]
+    with pytest.raises(FormatError) as exc:
+        group_create_rows(rows)
+    assert str(exc.value) == "Row 4: a step row (empty title) may only fill action and expected"
+
+
+def test_group_create_first_row_requires_suite_path():
+    with pytest.raises(FormatError) as exc:
+        group_create_rows([{}, {"title": "Case"}])
+    assert str(exc.value) == "Row 3: suite_path is required on the first row of a case"
+
+
+@pytest.mark.parametrize("priority, normalized", [("high", "High"), (" NOT SET ", "Not set"), ("", "Not set"), (None, "Not set")])
+def test_create_strict_priority_normalization(priority, normalized):
+    pivot = cases_to_pivot([{"suite_path": "A", "title": "Case", "priority": priority}], "P",
+                           require_key=False, strict_values=True)
+    assert pivot["cases"][0]["priority"] == normalized and pivot["cases"][0]["draft"] is True
+
+
+@pytest.mark.parametrize("draft, expected", [("", True), (None, True), ("YES", True), ("true", True),
+                                           ("y", True), (1, True), ("no", False), ("FALSE", False),
+                                           ("n", False), (0, False), (False, False)])
+def test_create_strict_draft_values(draft, expected):
+    pivot = cases_to_pivot([{"suite_path": "A", "title": "Case", "draft": draft}], "P",
+                           require_key=False, strict_values=True)
+    assert pivot["cases"][0]["draft"] is expected
+
+
+@pytest.mark.parametrize("field, value, message", [
+    ("priority", "urgent", "priority 'urgent' is not valid; use High, Medium, Low, Trivial or Not set"),
+    ("draft", "tidak", "draft 'tidak' is not valid; use yes or no"),
+])
+def test_create_inline_strict_values_reach_caller(tool_kiwi, field, value, message):
+    from kaspin_kiwi_mcp.create_test_case.tools import create_test_case
+
+    kiwi, ctx = tool_kiwi
+    with pytest.raises(FormatError) as exc:
+        asyncio.run(create_test_case(ctx, "P", [{"suite_path": "A", "title": "Case", field: value}]))
+    assert str(exc.value) == f"Case 1 (Case): {message}"
+    assert kiwi.reads == [] and kiwi.writes == []
+
+
+def test_cases_to_pivot_default_values_remain_lenient():
+    pivot = cases_to_pivot([{"key": "P-1", "suite_path": "A", "title": "Case", "priority": "urgent", "draft": "tidak"}], "P")
+    assert pivot["cases"][0]["priority"] == "urgent" and pivot["cases"][0]["draft"] is False
+    kiwi = FakeKiwi()
+    import_pivot(kiwi, pivot, dry_run=False)
+    assert kiwi.db["TestCase"][0]["priority"] == 3 and kiwi.db["TestCase"][0]["case_status"] == 1
+
+
+@pytest.mark.parametrize("field, value", [("priority", "urgent"), ("draft", "tidak")])
+def test_create_csv_strict_values_reach_caller(tool_kiwi, field, value):
+    from kaspin_kiwi_mcp.create_test_case.tools import create_test_case_csv
+
+    kiwi, ctx = tool_kiwi
+    text = _create_table_text([{"suite_path": "A", "title": "Case", field: value}])
+    with pytest.raises(FormatError) as expected:
+        cases_to_pivot(group_create_rows(csv_text_to_rows(text)), "P", require_key=False, strict_values=True)
+    with pytest.raises(FormatError) as actual:
+        asyncio.run(create_test_case_csv(ctx, "P", text))
+    assert str(actual.value) == str(expected.value)
+    assert kiwi.reads == [] and kiwi.writes == []
+
+
+def test_create_csv_case_limit_after_grouping(tool_kiwi):
+    from kaspin_kiwi_mcp.create_test_case.tools import create_test_case_csv
+
+    kiwi, ctx = tool_kiwi
+    text = _create_table_text([{"suite_path": "A", "title": f"Case {n}"} for n in range(101)])
+    with pytest.raises(ValueError) as exc:
+        asyncio.run(create_test_case_csv(ctx, "P", text))
+    assert str(exc.value) == "Send at most 100 cases per call (got 101); split them into batches."
+    assert kiwi.reads == [] and kiwi.writes == []
+    text = _create_table_text([{"suite_path": "A", "title": "Case"}] + [{"action": "Next"}] * 101)
+    assert "cases to create: 1" in asyncio.run(create_test_case_csv(ctx, "P", text))
+    assert kiwi.writes == []
+
+
+def test_create_csv_text_limit_before_parsing(tool_kiwi, monkeypatch):
+    from kaspin_kiwi_mcp.create_test_case import tools
+
+    kiwi, ctx = tool_kiwi
+
+    def unexpected_parse(*args):
+        pytest.fail("Size limit must be checked before parsing")
+
+    monkeypatch.setattr(tools, "csv_text_to_rows", unexpected_parse)
+    with pytest.raises(ValueError) as exc:
+        asyncio.run(tools.create_test_case_csv(ctx, "P", "x" * 1_000_001))
+    assert str(exc.value) == "csv_text is too large (over 1,000,000 characters); split it into batches of up to 100 cases."
+    assert kiwi.reads == [] and kiwi.writes == []
+
+
+def test_create_csv_large_cell_within_limit(tool_kiwi):
+    from kaspin_kiwi_mcp.create_test_case.tools import create_test_case_csv
+
+    _, ctx = tool_kiwi
+    old_limit = csv.field_size_limit()
+    text = _create_table_text([{"suite_path": "A", "title": "Case", "description": "x" * 200_000}])
+    assert "cases to create: 1" in asyncio.run(create_test_case_csv(ctx, "P", text))
+    assert csv.field_size_limit() == old_limit
+
+
+def test_create_csv_end_to_end(tool_kiwi):
+    from kaspin_kiwi_mcp.create_test_case.tools import create_test_case_csv
+
+    kiwi, ctx = tool_kiwi
+    text = (Path(__file__).parents[1] / "examples/create-template.csv").read_text(encoding="utf-8")
+    assert "cases to create: 2" in asyncio.run(create_test_case_csv(ctx, "P", text))
+    assert kiwi.writes == []
+    assert "cases created: 2" in asyncio.run(create_test_case_csv(ctx, "P", text, dry_run=False))
+    assert [c["case_status"] for c in kiwi.db["TestCase"]] == [2, 2]
+    assert not any(method == "TestCase.add_tag" for method, _ in kiwi.writes)
+    cases = group_create_rows(csv_text_to_rows(text))
+    for source, created in zip(cases, kiwi.db["TestCase"]):
+        for step in source["steps"]:
+            assert step["action"] in created["text"] and step["expected"] in created["text"]
+    kiwi.writes.clear()
+    report = asyncio.run(create_test_case_csv(ctx, "P", text, dry_run=False))
+    assert "cases created: 0" in report and "cases already in Kiwi (skipped): 2" in report
+    assert kiwi.writes == []
+
+
+def test_create_csv_no_draft_means_proposed_and_no_means_confirmed(tool_kiwi):
+    from kaspin_kiwi_mcp.create_test_case.tools import create_test_case_csv
+
+    kiwi, ctx = tool_kiwi
+    text = "suite_path,title,draft\nA,Draft,\nA,Confirmed,no\n"
+    asyncio.run(create_test_case_csv(ctx, "P", text, dry_run=False))
+    assert [c["case_status"] for c in kiwi.db["TestCase"]] == [2, 1]
+    assert all(c["text"] == "(no steps)\n" for c in kiwi.db["TestCase"])
+
+
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_create_csv_unknown_product_no_writes(tool_kiwi, dry_run):
+    from kaspin_kiwi_mcp.create_test_case.tools import create_test_case_csv
+
+    kiwi, ctx = tool_kiwi
+    with pytest.raises(ValueError) as exc:
+        asyncio.run(create_test_case_csv(ctx, "Typo", "suite_path,title\nA,Case\n", dry_run))
+    assert str(exc.value) == "Product 'Typo' does not exist in Kiwi; create_test_case never creates products. Check the spelling."
+    assert kiwi.writes == []
+
+
+def test_get_create_format_and_registration():
+    from mcp.server.fastmcp import FastMCP
+    from kaspin_kiwi_mcp.create_test_case.tools import get_create_format, register
+
+    assert get_create_format() == CREATE_FORMAT_HELP
+    assert all(column in get_create_format() for column in CREATE_COLUMNS + CREATE_EXTRA_COLUMNS)
+    assert "Google" in get_create_format() and "Excel" in get_create_format()
+    app = FastMCP("creation")
+    register(app)
+    assert [tool.name for tool in asyncio.run(app.list_tools())] == [
+        "create_test_case", "create_test_case_csv", "get_create_format",
+    ]
+    example = get_create_format().split("Example CSV", 1)[1].split("\n", 1)[1].split("\n\nHow to get the data:", 1)[0]
+    assert len(example.splitlines()) == 6
+    assert [len(c["steps"]) for c in group_create_rows(csv_text_to_rows(example))] == [3, 1]
+
+
+def test_create_csv_and_xlsx_templates_match():
+    from openpyxl import load_workbook
+
+    examples = Path(__file__).parents[1] / "examples"
+    raw = (examples / "create-template.csv").read_bytes()
+    assert b"\r" not in raw and not raw.startswith(b"\xef\xbb\xbf")
+    csv_cases = group_create_rows(csv_text_to_rows(raw.decode("utf-8")))
+    book = load_workbook(examples / "create-template.xlsx", data_only=True)
+    try:
+        assert book.sheetnames == ["test_case", "Petunjuk"]
+        sheet = book.worksheets[0]
+        rows = sheet.iter_rows(values_only=True)
+        header = list(next(rows))
+        assert header == CREATE_COLUMNS
+        normalized = [str(h).strip().casefold() for h in header]
+        xlsx_cases = group_create_rows([dict(zip(normalized, row)) for row in rows])
+        assert csv_cases == xlsx_cases and len(csv_cases) == 2
+        assert [len(c["steps"]) for c in csv_cases] == [3, 1]
+        pivot = cases_to_pivot(csv_cases, "P", require_key=False, strict_values=True)
+        assert [c["draft"] for c in pivot["cases"]] == [True, True]
+        assert sheet.freeze_panes == "A2" and all(cell.font.bold for cell in sheet[1])
+        validations = sheet.data_validations.dataValidation
+        assert len(validations) == 2
+        assert {(str(v.sqref), v.type, v.formula1) for v in validations} == {
+            ("C2:C1000", "list", '"High,Medium,Low,Trivial,Not set"'), ("D2:D1000", "list", '"yes,no"'),
+        }
+    finally:
+        book.close()
+
+
+# ---------------------------------------------------------- empty export columns
+
+
+HEADERLESS_CREATE_CSV = (
+    "suite_path,title,priority,draft,action,expected,,\n"
+    "Owner > Login,Login ok,High,yes,Buka app,Form muncul,,\n"
+    ",,,,Klik login,Home,,\n"
+)
+
+
+@pytest.mark.parametrize("suffix", [",,", ",Unnamed: 6,Unnamed: 7"])
+def test_create_csv_empty_trailing_header_columns(suffix):
+    text = HEADERLESS_CREATE_CSV.replace("expected,,\n", f"expected{suffix}\n", 1)
+    rows = csv_text_to_rows(text)
+    assert list(rows[0]) == ["suite_path", "title", "priority", "draft", "action", "expected"]
+    cases = group_create_rows(rows)
+    assert len(cases) == 1 and cases[0]["title"] == "Login ok"
+    assert cases[0]["steps"] == [
+        {"action": "Buka app", "expected": "Form muncul"}, {"action": "Klik login", "expected": "Home"},
+    ]
+    assert cases == group_create_rows(csv_text_to_rows(HEADERLESS_CREATE_CSV))
+
+
+def test_create_csv_empty_middle_columns_and_short_rows():
+    text = (
+        "suite_path,,title,action,expected,Unnamed: 5\n"
+        "Owner > Login,,Login ok,Buka app,Form muncul,\n"
+        ",,,Klik login,Home\n"
+    )
+    rows = csv_text_to_rows(text)
+    assert list(rows[0]) == ["suite_path", "title", "action", "expected"]
+    cases = group_create_rows(rows)
+    assert len(cases) == 1 and len(cases[0]["steps"]) == 2
+    assert cases[0]["steps"][1] == {"action": "Klik login", "expected": "Home"}
+    assert csv_text_to_rows("suite_path,title,,\nA,Case\n") == [{"suite_path": "A", "title": "Case"}]
+
+
+@pytest.mark.parametrize("text, column", [
+    (",suite_path,title\n0,A,Case\n1,,\n2,,\n", 1),
+    ("suite_path,,title\nA,,Case\n,hidden,\n", 2),
+    ("suite_path,title,Unnamed: 2\nA,Case,\n,,value\n", 3),
+])
+def test_create_csv_headerless_columns_with_values_rejected(text, column):
+    with pytest.raises(FormatError) as exc:
+        csv_text_to_rows(text)
+    assert str(exc.value) == (
+        f"Column {column} has values but no header name; send only the template columns (no row-index column)"
+    )
+
+
+@pytest.mark.parametrize("blank_row, number", [("", 2), ("\n", 3)])
+def test_create_csv_extra_nonblank_cell_rejected(blank_row, number):
+    with pytest.raises(FormatError) as exc:
+        csv_text_to_rows(f"suite_path,title\n{blank_row}A,Case,,value\n")
+    assert str(exc.value) == f"Row {number}: more cells than header columns"
+
+
+def test_create_csv_extra_blank_cells_ignored():
+    text = 'suite_path,title,action\nA,Case,Open,," \t "\n,,Next,,\n'
+    cases = group_create_rows(csv_text_to_rows(text))
+    assert len(cases) == 1 and cases[0]["steps"] == [
+        {"action": "Open", "expected": ""}, {"action": "Next", "expected": ""},
+    ]
+
+
+@pytest.mark.parametrize("header", ["Unnamed Notes", "Unnamed: x", "Unnamed: 1x", "Unnamed: 2.1"])
+def test_create_csv_unnamed_pattern_does_not_hide_unknown_columns(header):
+    with pytest.raises(FormatError, match="Unknown columns:") as exc:
+        csv_text_to_rows(f"suite_path,title,{header}\nA,Case,\n")
+    assert header.casefold().replace(" ", "_") in str(exc.value)
+
+
+@pytest.mark.parametrize("header, error", [
+    ("suite_path,,title,,TITLE", "Duplicate columns: title."),
+    ("suite_path,,,", "Missing required columns: title."),
+    ("suite_path,title,,Unnamed Notes,", "Unknown columns: 'unnamed_notes'."),
+])
+def test_create_csv_validates_named_headers_after_dropping_empty_columns(header, error):
+    with pytest.raises(FormatError) as exc:
+        csv_text_to_rows(header + "\n")
+    assert str(exc.value).startswith(error)
+
+
+@pytest.mark.parametrize("suffix", [",,", ",Unnamed: 6,Unnamed: 7"])
+def test_create_csv_headerless_export_end_to_end(tool_kiwi, suffix):
+    from kaspin_kiwi_mcp.create_test_case.tools import create_test_case_csv
+
+    kiwi, ctx = tool_kiwi
+    text = HEADERLESS_CREATE_CSV.replace("expected,,\n", f"expected{suffix}\n", 1)
+    assert "cases to create: 1" in asyncio.run(create_test_case_csv(ctx, "P", text))
+    assert kiwi.writes == []
+    assert "cases created: 1" in asyncio.run(create_test_case_csv(ctx, "P", text, dry_run=False))
+    assert len(kiwi.db["TestCase"]) == 1
+    case = kiwi.db["TestCase"][0]
+    assert case["case_status"] == 2 and case["tag"] is None
+    assert case["text"] == (
+        "**Actions**\n\n1. Buka app\n2. Klik login\n\n**Expected results**\n\n1. Form muncul\n2. Home\n"
+    )
