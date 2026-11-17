@@ -14,6 +14,8 @@ Cara kerja: server MCP ini di-hosting di server Kiwi (`https://<domain-kiwi>/mcp
 | `import_cases(cases, product, dry_run=true)` | Import data langsung (maks 100 case per panggilan; file lebih besar dikirim bertahap). |
 | `import_csv_text(csv_text, product, dry_run=true)` | Import isi CSV (maks 100 case). |
 | `get_import_status(job_id)` | Progres import besar. |
+| `search_test_case(product, query?, category?, key?, status?, limit=20)` | Cari case yang sudah ada di Kiwi; hanya membaca, maks 100 hasil. |
+| `create_test_case(product, cases, dry_run=true)` | Buat case baru di Kiwi (maks 100); pratinjau dulu, draft (PROPOSED) secara default, key opsional. Product harus sudah ada; tool ini tidak membuat Product. |
 
 Aturan main:
 - `dry_run=true` adalah default: hanya melaporkan apa yang akan dibuat. Tulis ke Kiwi dengan `dry_run=false` setelah laporan dicek.
@@ -79,9 +81,11 @@ url = "https://<domain-kiwi>/mcp"
 tool_timeout_sec = 120
 http_headers = { X-Kiwi-Username = "<user>", X-Kiwi-Password = "<password>", X-Zebrunner-Username = "<user zebrunner>", X-Zebrunner-Api-Token = "<token>" }
 
-# Tool yang hanya membaca boleh langsung disetujui. Tool impor sengaja dibiarkan ditanya:
+# Tool yang hanya membaca boleh langsung disetujui. Tool impor dan create_test_case tetap perlu persetujuan manual:
 # layar persetujuan menampilkan dry_run, jadi penulisan ke Kiwi tidak terjadi tanpa sepengetahuanmu.
 [mcp_servers.kaspin-kiwi.tools.check_connection]
+approval_mode = "approve"
+[mcp_servers.kaspin-kiwi.tools.search_test_case]
 approval_mode = "approve"
 [mcp_servers.kaspin-kiwi.tools.get_import_status]
 approval_mode = "approve"
@@ -116,6 +120,10 @@ Lihat bagian Codex di atas: ChatGPT desktop dipasang lewat `~/.codex/config.toml
 > Pakai kaspin-kiwi: impor test case ini ke Kiwi: https://<workspace>.zebrunner.com/projects/KPPOS/test-cases?caseId=898 (pratinjau dulu)
 
 > Pakai kaspin-kiwi: impor file test-cases.csv yang saya lampirkan ke product KPWEB2 (pratinjau dulu)
+
+> Pakai kaspin-kiwi: buat test case login dari requirement ini di product KPWEB2 di Kiwi. Cari case yang sudah ada dulu, lalu tampilkan preview sebelum menulis; buat sebagai draft.
+
+Untuk case baru, key boleh kosong; judul yang sudah ada di suite/plan yang sama (sesuai `suite_path`) dilewati. Isi `draft: false` hanya bila case siap menjadi CONFIRMED.
 
 Cek laporan pratinjau (jumlah plan dan case, peringatan bila product akan dibuat), lalu minta AI melanjutkan dengan `dry_run=false`.
 

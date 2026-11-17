@@ -78,9 +78,10 @@ def _steps(raw):
     return steps
 
 
-def cases_to_pivot(cases, product):
+def cases_to_pivot(cases, product, *, require_key=True):
     """Plain case dicts (with suite_path and steps) -> pivot. Raises FormatError with the case number."""
     suites, suite_ids, result, seen = [], {}, [], set()
+    seen_titles = set()
 
     def suite_id(path_text):
         parts = [p.strip() for p in str(path_text).split(PATH_SEP.strip()) if p.strip()]
@@ -97,16 +98,28 @@ def cases_to_pivot(cases, product):
 
     for number, case in enumerate(cases, 1):
         key = str(case.get("key") or "").strip()
-        if not key:
+        if require_key and not key:
             raise FormatError(f"Case {number}: 'key' is required (used to avoid duplicates)")
-        if key in seen:
+        if key and key in seen:
             raise FormatError(f"Case {number}: duplicate key {key}")
-        seen.add(key)
+        if key:
+            seen.add(key)
         if not case.get("title") or not case.get("suite_path"):
+            if not key:
+                raise FormatError(f"Case {number}: title and suite_path are required")
             raise FormatError(f"Case {number} ({key}): title and suite_path are required")
+        if not key:
+            title, suite_path = str(case["title"]), str(case["suite_path"])
+            identity = (
+                tuple(p.strip().casefold() for p in suite_path.split(">") if p.strip()),
+                title.strip().casefold(),
+            )
+            if identity in seen_titles:
+                raise FormatError(f"Case {number}: duplicate case '{title}' in {suite_path}")
+            seen_titles.add(identity)
         result.append(
             {
-                "key": key,
+                "key": key or None,
                 "suite": suite_id(case["suite_path"]),
                 "priority": case.get("priority") or "Not set",
                 "title": str(case["title"]),

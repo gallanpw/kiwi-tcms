@@ -44,7 +44,7 @@ def new_report(pivot, dry_run):
             "cases_existing": [], "total": len(pivot["cases"]), "processed": 0}  # fmt: skip
 
 
-def import_pivot(kiwi, pivot, dry_run=True, report=None):
+def import_pivot(kiwi, pivot, dry_run=True, report=None, *, create_product=True, plan_text=None):
     """Create everything missing in Kiwi. With dry_run only reads, never writes.
 
     ``report`` may be passed in (and read by another thread) to follow progress.
@@ -63,6 +63,10 @@ def import_pivot(kiwi, pivot, dry_run=True, report=None):
 
     product = kiwi.first("Product.filter", {"name": pivot["product"]})
     report["product_new"] = product is None  # a typo in the name would silently create a product
+    if not product and not create_product:
+        raise RuntimeError(
+            f"Product '{pivot['product']}' does not exist in Kiwi; this tool never creates products. Check the spelling."
+        )
     if not product and not dry_run:
         classification = kiwi.first("Classification.filter", {"name": CLASSIFICATION}) or kiwi.call(
             "Classification.create", {"name": CLASSIFICATION}
@@ -88,7 +92,9 @@ def import_pivot(kiwi, pivot, dry_run=True, report=None):
             if not dry_run:
                 values = {
                     "name": suite["title"], "product": product_id, "product_version": version["id"],
-                    "type": plan_type, "text": f"Imported from Zebrunner suite {suite['id']}",
+                    "type": plan_type,
+                    "text": plan_text.format(title=suite["title"]) if plan_text is not None
+                    else f"Imported from Zebrunner suite {suite['id']}",
                 }  # fmt: skip
                 if suite["parent"] is not None:
                     values["parent"] = plans[suite["parent"]]
@@ -98,15 +104,21 @@ def import_pivot(kiwi, pivot, dry_run=True, report=None):
 
     for case in pivot["cases"]:
         report["processed"] += 1
-        existing = (
-            kiwi.first("TestCase.filter", {"tag__name": case["key"], "category__product": product_id})
-            if product_id
-            else None
-        )
+        existing = None
+        if product_id:
+            if case["key"]:
+                existing = kiwi.first("TestCase.filter", {"tag__name": case["key"], "category__product": product_id})
+            else:
+                plan_id = plans.get(case["suite"])
+                if plan_id is not None:
+                    existing = kiwi.first(
+                        "TestCase.filter", {"plan": plan_id, "summary__iexact": case["title"]}
+                    )
+        label = case["key"] or case["title"]
         if existing:
-            report["cases_existing"].append(case["key"])
+            report["cases_existing"].append(label)
             continue
-        report["cases_new"].append(case["key"])
+        report["cases_new"].append(label)
         if dry_run:
             continue
         name = titles[case["suite"]]
@@ -124,7 +136,8 @@ def import_pivot(kiwi, pivot, dry_run=True, report=None):
                 "text": case_text(case), "is_automated": False,
             },
         )  # fmt: skip
-        kiwi.call("TestCase.add_tag", created["id"], case["key"])
+        if case["key"]:
+            kiwi.call("TestCase.add_tag", created["id"], case["key"])
         kiwi.call("TestPlan.add_case", plans[case["suite"]], created["id"])
     return report
 

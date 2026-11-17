@@ -241,12 +241,18 @@ class FakeKiwi:
             "Classification": [], "TestCase": [],
         }  # fmt: skip
         self.writes = []
+        self.reads = []
         self.n = 100
 
     def first(self, method, query):
+        self.reads.append((method, query))
         kind = method.split(".")[0]
         if kind == "TestCase":
-            hits = [c for c in self.db["TestCase"] if c["tag"] == query["tag__name"]]
+            if "tag__name" in query:
+                hits = [c for c in self.db["TestCase"] if c["tag"] == query["tag__name"]]
+            else:
+                hits = [c for c in self.db["TestCase"] if query["plan"] in c.get("plans", [])
+                        and c["summary"].casefold() == query["summary__iexact"].casefold()]
         else:
             hits = [r for r in self.db[kind] if all(r.get(k) == v for k, v in query.items())]
         return hits[0] if hits else None
@@ -259,12 +265,15 @@ class FakeKiwi:
             row = {"id": self.n, **args[0]}
             if kind == "TestCase":
                 row["tag"] = None
+                row["plans"] = []
             self.db[kind].append(row)
             if kind == "Product":  # real Kiwi adds this version itself
                 self.db["Version"].append({"id": self.n + 500, "product": row["id"], "value": "unspecified"})
             return row
         if method == "TestCase.add_tag":
             next(c for c in self.db["TestCase"] if c["id"] == args[0])["tag"] = args[1]
+        if method == "TestPlan.add_case":
+            next(c for c in self.db["TestCase"] if c["id"] == args[1])["plans"].append(args[0])
 
 
 def test_import_dry_run_writes_nothing():
@@ -454,3 +463,319 @@ def test_print_config_uses_absolute_python(capsys):
     cfg = json.loads(capsys.readouterr().out)["mcpServers"]["kaspin-kiwi"]
     assert cfg["command"] == sys.executable and cfg["args"] == ["-m", "kaspin_kiwi_mcp"]
     assert "KIWI_PASSWORD" in cfg["env"] and "ZEBRUNNER_API_TOKEN" in cfg["env"]
+
+
+# --------------------------------------------------------- search / create cases
+
+
+@pytest.mark.parametrize("key", [None, "", "   "])
+def test_cases_to_pivot_optional_key(key):
+    case = {"suite_path": "Owner > Login", "title": "Login ok"}
+    if key is not None:
+        case["key"] = key
+    assert cases_to_pivot([case], "P", require_key=False)["cases"][0]["key"] is None
+    with pytest.raises(FormatError) as exc:
+        cases_to_pivot([case], "P")
+    assert str(exc.value) == "Case 1: 'key' is required (used to avoid duplicates)"
+
+
+def test_cases_to_pivot_optional_key_duplicates():
+    case = {"suite_path": "Owner > Login", "title": "Login ok"}
+    duplicate = {"suite_path": " owner  >  LOGIN ", "title": " LOGIN OK "}
+    with pytest.raises(FormatError) as exc:
+        cases_to_pivot([case, duplicate], "P", require_key=False)
+    assert str(exc.value) == "Case 2: duplicate case ' LOGIN OK ' in  owner  >  LOGIN "
+    keyed = {**case, "key": "P-1"}
+    with pytest.raises(FormatError) as exc:
+        cases_to_pivot([keyed, keyed], "P", require_key=False)
+    assert str(exc.value) == "Case 2: duplicate key P-1"
+    pivot = cases_to_pivot([case, {**case, "suite_path": "Other"}, keyed], "P", require_key=False)
+    assert len(pivot["cases"]) == 3
+
+
+@pytest.mark.parametrize("missing", ["title", "suite_path"])
+def test_cases_to_pivot_optional_key_still_requires_fields(missing):
+    case = {"suite_path": "Login", "title": "Login ok"}
+    del case[missing]
+    with pytest.raises(FormatError) as exc:
+        cases_to_pivot([case], "P", require_key=False)
+    assert str(exc.value) == "Case 1: title and suite_path are required"
+    with pytest.raises(FormatError) as exc:
+        cases_to_pivot([{**case, "key": "P-1"}], "P", require_key=False)
+    assert str(exc.value) == "Case 1 (P-1): title and suite_path are required"
+
+
+def test_import_keyless_dry_run_create_and_dedupe():
+    kiwi = FakeKiwi()
+    kiwi.db["Product"].append({"id": 10, "name": "P"})
+    pivot = cases_to_pivot([
+        {"suite_path": "Owner > Login", "title": "Login ok", "draft": True, "priority": "High",
+         "steps": [{"action": "Open", "expected": "Home"}]},
+        {"suite_path": "Owner > Login", "title": "Tagged", "key": "P-1"},
+    ], "P", require_key=False)
+    options = {"create_product": False, "plan_text": "Created with kaspin-kiwi MCP"}
+    preview = import_pivot(kiwi, pivot, **options)
+    assert kiwi.writes == [] and preview["cases_new"] == ["Login ok", "P-1"]
+    report = import_pivot(kiwi, pivot, dry_run=False, **options)
+    assert report["cases_new"] == ["Login ok", "P-1"]
+    keyless, keyed = kiwi.db["TestCase"]
+    assert keyless["case_status"] == 2 and keyless["tag"] is None and keyless["priority"] == 1
+    assert keyless["text"] == "**Actions**\n\nOpen\n\n**Expected results**\n\nHome\n"
+    assert keyed["tag"] == "P-1"
+    assert [args for method, args in kiwi.writes if method == "TestCase.add_tag"] == [(keyed["id"], "P-1")]
+    assert [args for method, args in kiwi.writes if method == "TestPlan.add_case"] == [
+        (kiwi.db["TestPlan"][-1]["id"], keyless["id"]),
+        (kiwi.db["TestPlan"][-1]["id"], keyed["id"]),
+    ]
+    assert all(plan["text"] == "Created with kaspin-kiwi MCP" for plan in kiwi.db["TestPlan"])
+    kiwi.writes.clear()
+    pivot["cases"][0]["title"] = "LOGIN OK"
+    again = import_pivot(kiwi, pivot, dry_run=False, **options)
+    assert again["cases_new"] == [] and again["cases_existing"] == ["LOGIN OK", "P-1"]
+    assert kiwi.writes == []
+    assert ("TestCase.filter", {"plan": keyless["plans"][0], "summary__iexact": "LOGIN OK"}) in kiwi.reads
+    assert ("TestCase.filter", {"tag__name": "P-1", "category__product": 10}) in kiwi.reads
+
+
+def test_import_keyless_same_title_in_separate_plans():
+    kiwi = FakeKiwi()
+    kiwi.db["Product"].append({"id": 10, "name": "P"})
+    for suite_path in ("Owner > Login", "Admin > Login"):
+        pivot = cases_to_pivot([{"suite_path": suite_path, "title": "Login ok"}], "P", require_key=False)
+        report = import_pivot(kiwi, pivot, dry_run=False, create_product=False)
+        assert report["cases_new"] == ["Login ok"] and report["cases_existing"] == []
+    assert len(kiwi.db["TestCase"]) == 2 and len(kiwi.db["Category"]) == 1
+    first, second = kiwi.db["TestCase"]
+    assert first["plans"] != second["plans"]
+    assert [args for method, args in kiwi.writes if method == "TestPlan.add_case"] == [
+        (first["plans"][0], first["id"]), (second["plans"][0], second["id"]),
+    ]
+
+
+@pytest.mark.parametrize("title, existing", [("Login ok", True), ("LOGIN OK", True), ("Login  ok", False)])
+def test_import_keyless_same_plan_title_match(title, existing):
+    kiwi = FakeKiwi()
+    kiwi.db["Product"].append({"id": 10, "name": "P"})
+    case = {"suite_path": "Owner > Login", "title": "Login ok"}
+    import_pivot(kiwi, cases_to_pivot([case], "P", require_key=False), dry_run=False, create_product=False)
+    kiwi.writes.clear()
+    pivot = cases_to_pivot([{**case, "title": title}], "P", require_key=False)
+    report = import_pivot(kiwi, pivot, dry_run=False, create_product=False)
+    assert report["cases_existing"] == ([title] if existing else [])
+    assert report["cases_new"] == ([] if existing else [title])
+    assert len(kiwi.db["TestCase"]) == (1 if existing else 2)
+    if existing:
+        assert kiwi.writes == []
+
+
+@pytest.mark.parametrize("suite_path, existing", [("Owner > Login", True), ("Admin > Login", False)])
+def test_import_keyless_dry_run_scoped_to_plan(suite_path, existing):
+    kiwi = FakeKiwi()
+    kiwi.db["Product"].append({"id": 10, "name": "P"})
+    case = {"suite_path": "Owner > Login", "title": "Login ok"}
+    import_pivot(kiwi, cases_to_pivot([case], "P", require_key=False), dry_run=False, create_product=False)
+    kiwi.writes.clear()
+    kiwi.reads.clear()
+    pivot = cases_to_pivot([{**case, "suite_path": suite_path}], "P", require_key=False)
+    report = import_pivot(kiwi, pivot, dry_run=True, create_product=False)
+    assert report["cases_existing"] == (["Login ok"] if existing else [])
+    assert report["cases_new"] == ([] if existing else ["Login ok"])
+    assert kiwi.writes == []
+    assert not any(method == "Category.filter" for method, _ in kiwi.reads)
+    if not existing:
+        assert not any(method == "TestCase.filter" for method, _ in kiwi.reads)
+
+
+def test_import_keyless_missing_product_and_blank_key():
+    kiwi = FakeKiwi()
+    pivot = cases_to_pivot([{"suite_path": "Login", "title": "Login ok"}], "P", require_key=False)
+    pivot["cases"][0]["key"] = ""
+    assert import_pivot(kiwi, pivot)["cases_new"] == ["Login ok"]
+    assert kiwi.writes == []
+    import_pivot(kiwi, pivot, dry_run=False)
+    assert not any(method == "TestCase.add_tag" for method, _ in kiwi.writes)
+
+
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_import_never_creates_unknown_product(dry_run):
+    kiwi = FakeKiwi()
+    with pytest.raises(RuntimeError) as exc:
+        import_pivot(kiwi, PIVOT, dry_run=dry_run, create_product=False)
+    assert str(exc.value) == (
+        "Product 'KPPOS' does not exist in Kiwi; this tool never creates products. Check the spelling."
+    )
+    assert kiwi.writes == []
+
+
+def test_import_plan_text_title_format():
+    kiwi = FakeKiwi()
+    import_pivot(kiwi, PIVOT, dry_run=False, plan_text="Created: {title}")
+    assert [plan["text"] for plan in kiwi.db["TestPlan"]] == ["Created: Owner", "Created: Login"]
+
+
+@pytest.fixture
+def tool_kiwi(monkeypatch):
+    from kaspin_kiwi_mcp.backup_test_case import tools as backup
+    from kaspin_kiwi_mcp.create_test_case import tools as create
+    from kaspin_kiwi_mcp.search_test_case import tools as search
+
+    kiwi = FakeKiwi()
+    kiwi.db["Product"].append({"id": 10, "name": "P"})
+
+    async def login(creds):
+        assert creds.kiwi == ["qa", "pw"]
+        return kiwi
+
+    for module in (backup, create, search):
+        monkeypatch.setattr(module, "_login", login)
+    return kiwi, _Ctx({"x-kiwi-username": "qa", "x-kiwi-password": "pw"})
+
+
+@pytest.mark.parametrize("filtered", [False, True])
+def test_search_filters_output_and_truncation(tool_kiwi, monkeypatch, filtered):
+    from kaspin_kiwi_mcp.search_test_case.tools import search_test_case
+
+    kiwi, ctx = tool_kiwi
+    rows = [
+        {"id": n, "case_status__name": "PROPOSED", "priority__value": "P1",
+         "category__name": "Login", "summary": f"Login {n}", "text": "Never print body"}
+        for n in (3, 1, 2)
+    ]
+    calls = []
+
+    def call(method, query):
+        calls.append((method, query))
+        return rows
+
+    monkeypatch.setattr(kiwi, "call", call)
+    kwargs = dict(query="Login", category="Login", key="P-1", status="PROPOSED", limit=2) if filtered else {}
+    text = asyncio.run(search_test_case(ctx, "P", **kwargs))
+    expected = {"category__product": 10}
+    if filtered:
+        expected.update(summary__icontains="Login", category__name="Login", tag__name="P-1",
+                        case_status__name="PROPOSED")
+    assert calls == [("TestCase.filter", expected)]
+    assert kiwi.reads == [("Product.filter", {"name": "P"})]
+    first = "Found 3 case(s) in P" + (", showing the first 2" if filtered else "")
+    count = 2 if filtered else 3
+    assert text == "\n".join([first] + [f"#{n} [PROPOSED] [P1] Login | Login {n}" for n in range(1, count + 1)])
+    assert kiwi.writes == []
+
+
+@pytest.mark.parametrize("limit", [1, 100])
+def test_search_no_matches_and_limit_endpoints(tool_kiwi, monkeypatch, limit):
+    from kaspin_kiwi_mcp.search_test_case.tools import search_test_case
+
+    kiwi, ctx = tool_kiwi
+    monkeypatch.setattr(kiwi, "call", lambda *args: [])
+    assert asyncio.run(search_test_case(ctx, "P", limit=limit)) == "Found 0 case(s) in P"
+    assert kiwi.writes == []
+
+
+def test_search_unknown_product(tool_kiwi):
+    from kaspin_kiwi_mcp.search_test_case.tools import search_test_case
+
+    kiwi, ctx = tool_kiwi
+    with pytest.raises(ValueError) as exc:
+        asyncio.run(search_test_case(ctx, "Typo"))
+    assert str(exc.value) == "Product 'Typo' does not exist in Kiwi."
+    assert kiwi.writes == []
+
+
+@pytest.mark.parametrize("limit", [0, -1, 101])
+def test_search_invalid_limit(tool_kiwi, limit):
+    from kaspin_kiwi_mcp.search_test_case.tools import search_test_case
+
+    kiwi, ctx = tool_kiwi
+    with pytest.raises(ValueError, match="^limit must be between 1 and 100$"):
+        asyncio.run(search_test_case(ctx, "P", limit=limit))
+    assert kiwi.reads == [] and kiwi.writes == []
+
+
+def test_create_defaults_drafts_and_preserves_explicit_false(tool_kiwi):
+    from kaspin_kiwi_mcp.create_test_case.tools import create_test_case
+
+    kiwi, ctx = tool_kiwi
+    cases = [{"suite_path": "Login", "title": "Draft"},
+             {"suite_path": "Login", "title": "Ready", "draft": False}]
+    preview = asyncio.run(create_test_case(ctx, "P", cases))
+    assert "DRY RUN (nothing written)" in preview and "cases to create: 2" in preview
+    assert kiwi.writes == [] and "draft" not in cases[0]
+    report = asyncio.run(create_test_case(ctx, "P", cases, dry_run=False))
+    assert "cases created: 2" in report
+    assert [case["case_status"] for case in kiwi.db["TestCase"]] == [2, 1]
+    assert kiwi.db["TestPlan"][0]["text"] == "Created with kaspin-kiwi MCP"
+    assert not any(method in ("Product.create", "TestCase.add_tag") for method, _ in kiwi.writes)
+
+
+@pytest.mark.parametrize("draft, status", [(None, 2), ("", 2), (False, 1), ("no", 1), ("false", 1)])
+def test_create_null_blank_and_explicit_false_drafts(tool_kiwi, draft, status):
+    from kaspin_kiwi_mcp.create_test_case.tools import create_test_case
+
+    kiwi, ctx = tool_kiwi
+    case = {"suite_path": "Login", "title": "Login ok", "draft": draft}
+    asyncio.run(create_test_case(ctx, "P", [case], dry_run=False))
+    assert kiwi.db["TestCase"][0]["case_status"] == status
+    assert case["draft"] == draft
+
+
+def test_create_rejects_over_inline_limit(tool_kiwi):
+    from kaspin_kiwi_mcp.create_test_case.tools import create_test_case
+
+    kiwi, ctx = tool_kiwi
+    with pytest.raises(ValueError) as exc:
+        asyncio.run(create_test_case(ctx, "P", [{}] * 101))
+    assert str(exc.value) == "Send at most 100 cases per call (got 101); split them into batches."
+    assert kiwi.reads == [] and kiwi.writes == []
+
+
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_create_unknown_product_precheck(tool_kiwi, monkeypatch, dry_run):
+    from kaspin_kiwi_mcp.create_test_case import tools
+
+    kiwi, ctx = tool_kiwi
+
+    async def unexpected_import(*args, **kwargs):
+        pytest.fail("Unknown product must be rejected before import")
+
+    monkeypatch.setattr(tools, "_run_import", unexpected_import)
+    with pytest.raises(ValueError) as exc:
+        asyncio.run(tools.create_test_case(ctx, "Typo", [{"suite_path": "Login", "title": "t"}], dry_run))
+    assert str(exc.value) == (
+        "Product 'Typo' does not exist in Kiwi; create_test_case never creates products. Check the spelling."
+    )
+    assert kiwi.reads == [("Product.filter", {"name": "Typo"})] and kiwi.writes == []
+
+
+def test_create_background_forwards_import_options(tool_kiwi, monkeypatch):
+    from kaspin_kiwi_mcp.backup_test_case import tools as backup
+    from kaspin_kiwi_mcp.create_test_case.tools import create_test_case
+
+    kiwi, ctx = tool_kiwi
+    captured = []
+
+    def start(owner, report, work):
+        captured.append((owner, work))
+        return "job-test"
+
+    monkeypatch.setattr(backup.jobs, "start", start)
+    cases = [{"suite_path": "Login", "title": f"Case {n}"} for n in range(100)]
+    assert "job-test" in asyncio.run(create_test_case(ctx, "P", cases, dry_run=False))
+    assert kiwi.writes == []
+    owner, work = captured[0]
+    assert owner == "qa"
+    work()
+    assert len(kiwi.db["TestCase"]) == 100
+    assert kiwi.db["TestPlan"][0]["text"] == "Created with kaspin-kiwi MCP"
+    assert all(case["case_status"] == 2 for case in kiwi.db["TestCase"])
+    kiwi.db["Product"].clear()
+    kiwi.writes.clear()
+    with pytest.raises(RuntimeError, match="this tool never creates products"):
+        work()
+    assert kiwi.writes == []
+
+
+def test_hosted_server_lists_search_and_create_with_old_tools():
+    names = {t.name for t in asyncio.run(server.mcp.list_tools())}
+    assert names == {"check_connection", "import_from_zebrunner", "get_file_format", "import_cases",
+                     "import_csv_text", "get_import_status", "search_test_case", "create_test_case"}
