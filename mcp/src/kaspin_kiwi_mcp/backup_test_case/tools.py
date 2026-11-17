@@ -18,7 +18,8 @@ MAX_CASES = 1000
 UPLOAD_ENABLED = os.environ.get("MCP_ENABLE_UPLOAD", "").strip().lower() in ("1", "true", "yes")
 
 
-async def _run_import(creds, pivot, dry_run):
+# Shared with create_test_case so inline imports and background jobs use the same runner.
+async def _run_import(creds, pivot, dry_run, **import_options):
     count = len(pivot["cases"])
     if count == 0:
         return "No test cases found, nothing to do."
@@ -27,9 +28,9 @@ async def _run_import(creds, pivot, dry_run):
     kiwi = await _login(creds)
     report = new_report(pivot, dry_run)
     if count <= BACKGROUND_FROM:
-        await _thread(import_pivot, kiwi, pivot, dry_run, report)
+        await _thread(lambda: import_pivot(kiwi, pivot, dry_run, report, **import_options))
         return format_report(report)
-    job_id = jobs.start(creds.kiwi[0], report, lambda: import_pivot(kiwi, pivot, dry_run, report))
+    job_id = jobs.start(creds.kiwi[0], report, lambda: import_pivot(kiwi, pivot, dry_run, report, **import_options))
     return (
         f"{count} cases: running in the background as job {job_id} "
         f"({'dry run' if dry_run else 'writing to Kiwi'}). "

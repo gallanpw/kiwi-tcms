@@ -14,6 +14,10 @@ Cara kerja: server MCP ini di-hosting di server Kiwi (`https://<domain-kiwi>/mcp
 | `import_cases(cases, product, dry_run=true)` | Import data langsung (maks 100 case per panggilan; file lebih besar dikirim bertahap). |
 | `import_csv_text(csv_text, product, dry_run=true)` | Import isi CSV (maks 100 case). |
 | `get_import_status(job_id)` | Progres import besar. |
+| `search_test_case(product, query?, category?, key?, status?, limit=20)` | Cari case yang sudah ada di Kiwi; hanya membaca, maks 100 hasil. |
+| `create_test_case(product, cases, dry_run=true)` | Buat case baru di Kiwi (maks 100); pratinjau dulu, draft (PROPOSED) secara default, key opsional. Product harus sudah ada; tool ini tidak membuat Product. |
+| `create_test_case_csv(product, csv_text, dry_run=true)` | Buat case baru dari tabel CSV/Excel/Google Sheets yang dibaca AI dan dikirim sebagai teks (maks 100 case, 1.000.000 karakter). |
+| `get_create_format()` | Format tabel tetap untuk case baru; baca sebelum memakai `create_test_case_csv`. Hanya membaca. |
 
 Aturan main:
 - `dry_run=true` adalah default: hanya melaporkan apa yang akan dibuat. Tulis ke Kiwi dengan `dry_run=false` setelah laporan dicek.
@@ -79,13 +83,17 @@ url = "https://<domain-kiwi>/mcp"
 tool_timeout_sec = 120
 http_headers = { X-Kiwi-Username = "<user>", X-Kiwi-Password = "<password>", X-Zebrunner-Username = "<user zebrunner>", X-Zebrunner-Api-Token = "<token>" }
 
-# Tool yang hanya membaca boleh langsung disetujui. Tool impor sengaja dibiarkan ditanya:
+# Tool baca boleh langsung disetujui. Tool impor, create_test_case, create_test_case_csv tetap perlu persetujuan manual:
 # layar persetujuan menampilkan dry_run, jadi penulisan ke Kiwi tidak terjadi tanpa sepengetahuanmu.
 [mcp_servers.kaspin-kiwi.tools.check_connection]
+approval_mode = "approve"
+[mcp_servers.kaspin-kiwi.tools.search_test_case]
 approval_mode = "approve"
 [mcp_servers.kaspin-kiwi.tools.get_import_status]
 approval_mode = "approve"
 [mcp_servers.kaspin-kiwi.tools.get_file_format]
+approval_mode = "approve"
+[mcp_servers.kaspin-kiwi.tools.get_create_format]
 approval_mode = "approve"
 ```
 
@@ -117,13 +125,53 @@ Lihat bagian Codex di atas: ChatGPT desktop dipasang lewat `~/.codex/config.toml
 
 > Pakai kaspin-kiwi: impor file test-cases.csv yang saya lampirkan ke product KPWEB2 (pratinjau dulu)
 
+> Pakai kaspin-kiwi: buat test case login dari requirement ini di product KPWEB2 di Kiwi. Cari case yang sudah ada dulu, lalu tampilkan preview sebelum menulis; buat sebagai draft.
+
+Untuk case baru, key boleh kosong; judul yang sudah ada di suite/plan yang sama (sesuai `suite_path`) dilewati. Isi `draft: false` hanya bila case siap menjadi CONFIRMED.
+
 Cek laporan pratinjau (jumlah plan dan case, peringatan bila product akan dibuat), lalu minta AI melanjutkan dengan `dry_run=false`.
 
 File yang dilampirkan di chat dibaca AI lalu dikirim sebagai data (`import_cases` / `import_csv_text`, maks 100 case per panggilan). File yang lebih besar dikirim bertahap; aman karena case yang sudah ada dilewati. Setelah batch terakhir, cocokkan jumlah dibuat + dilewati dengan jumlah baris file. Untuk file sangat besar, data yang melewati AI memakan banyak token dan bisa tersalin kurang tepat; gunakan mode lokal (`import_file`) atau, bila perlu, link upload (opsional, di bawah).
 
-### Link upload (opsional, default mati)
+### Link upload (opsional, default mati, khusus backup/impor)
 
 Server dapat menyediakan link upload sekali pakai (15 menit, maks 5 MB) untuk file besar, tanpa melewati AI. Fitur ini menambah satu URL publik, jadi **tidak aktif** kecuali `MCP_ENABLE_UPLOAD=1` di `mcp.env` server. Bila aktif, tersedia tool `create_upload_link()` dan `import_uploaded_file(upload_id, product, dry_run=true)`.
+
+## Membuat test case baru dari file (CSV / Excel / Google Sheets)
+
+Pakai [template CSV](examples/create-template.csv) atau [template Excel](examples/create-template.xlsx).
+AI membaca lampiran/tab, lalu mengirim teks tabel melalui `create_test_case_csv`; **server tidak menerima file atau membuka link** pada jalur kreasi ini. Product Kiwi harus sudah ada. Panggil `get_create_format` dahulu; `get_file_format` khusus backup/impor.
+
+| Kolom | Aturan |
+|---|---|
+| `suite_path` | Wajib di header dan baris pertama case; level dipisah ` > `. |
+| `title` | Wajib di header; judul terisi memulai case baru. |
+| `priority` | Opsional: High, Medium, Low, Trivial, Not set; kosong = Not set. |
+| `draft` | Opsional: yes/no, true/false, y/n, 1/0; kosong = yes (PROPOSED), no = CONFIRMED. |
+| `description` | Opsional: deskripsi. |
+| `preconditions` | Opsional: kondisi awal. |
+| `postconditions` | Opsional: kondisi akhir. |
+| `action` | Opsional: aksi step. |
+| `expected` | Opsional: hasil yang diharapkan. |
+
+Satu baris per step. Baris lanjutan mengosongkan `title` dan kolom lain, hanya mengisi `action`/`expected`; baris kosong dilewati. Contoh:
+
+```csv
+suite_path,title,priority,draft,description,preconditions,postconditions,action,expected
+Contoh > Login,Login berhasil,High,yes,,,,Buka login,Form tampil
+,,,,,,,Isi akun valid dan klik Masuk,Dashboard tampil
+Contoh > Login,Password salah,Medium,yes,,,,Isi password salah,Pesan error tampil
+```
+
+Header tetap: spasi tepi/BOM diabaikan, huruf besar/kecil disamakan, spasi/underscore/tanda hubung dinormalisasi menjadi `_`. Kolom kosong di kanan (atau bernama `Unnamed: n` dari pandas) yang seluruh selnya kosong diabaikan, tetapi kolom tanpa nama yang berisi nilai (mis. kolom nomor baris) ditolak. Kolom asing, kolom wajib hilang, atau nama kolom ganda ditolak. Tambahan gaya backup `key` dan `step_no` diterima; pada step lanjutan `key` harus kosong/sama dan `step_no` diabaikan. Nilai priority/draft tidak membedakan huruf besar/kecil, tetapi nilai lain ditolak. CSV boleh memakai `,`, `;` (umum pada Excel lokal Indonesia/Eropa), atau TAB; sel berisi pemisah/baris baru harus dikutip. Judul yang sudah ada di suite/plan yang sama dilewati. Maksimal 100 case per panggilan; bagi tabel besar menjadi beberapa batch.
+
+- **CSV:** lampirkan file; AI mengirim teksnya tanpa mengubah isi.
+- **Excel (.xlsx):** lampirkan file; AI membaca sheet pertama, mempertahankan header, nilai sel dan susunan baris, lalu mengirim CSV text tanpa meringkas, menggabung, menerjemahkan atau mengurutkan ulang. `.xls`/Numbers perlu diekspor ke `.xlsx` atau CSV dahulu.
+- **Google Sheets:** AI memakai akses Google Drive/Sheets miliknya untuk membaca tab berisi case (`gid` pada link). Jika akses tidak tersedia, unduh tab sebagai CSV (File > Download > Comma-separated values) atau `.xlsx`, lalu lampirkan. Hanya jika sheet dibagikan sebagai **"anyone with the link"**, AI boleh mengambil URL ekspor CSV: `https://docs.google.com/spreadsheets/d/<id>/export?format=csv&gid=<tab id>`. Server sendiri tidak mengambil URL.
+
+> Pakai kaspin-kiwi: buat test case baru dari lampiran Excel ini di product KPWEB2 di Kiwi. Baca get_create_format dan sheet pertama, kirim tabel sebagai CSV text, tampilkan preview dulu sebelum menulis.
+
+> Pakai kaspin-kiwi: baca tab test case pada Google Sheets ini dengan akses Google kamu untuk membuat case baru di product KPWEB2 di Kiwi. Ikuti get_create_format; tampilkan preview dulu, lanjut menulis hanya setelah saya setuju.
 
 ## Format CSV / XLSX
 

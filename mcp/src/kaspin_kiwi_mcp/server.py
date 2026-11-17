@@ -17,6 +17,8 @@ from starlette.responses import JSONResponse
 from .core import config
 from .backup_test_case import tools
 from .backup_test_case.tools import register_upload as _register_upload
+from .search_test_case import tools as search_tools
+from .create_test_case import tools as create_tools
 
 logging.getLogger("httpx").setLevel(logging.WARNING)  # request URLs are noise in the client log
 
@@ -28,6 +30,8 @@ mcp = FastMCP(
         "'dry run' here means a preview of the import: nothing is written. "
         "Always preview first (dry_run=true), show the report, and write (dry_run=false) only after the user agrees. "
         "Call get_file_format before building case data from a user's spreadsheet."
+        " To check what already exists use search_test_case; to add brand-new cases use create_test_case (preview first, drafts by default, never creates products)."
+        " For a table of NEW cases (CSV, Excel, Google Sheets) call get_create_format first (not get_file_format, which describes the backup/import format) and then create_test_case_csv; the server never receives files or opens links, you send the table as text."
     ),
     stateless_http=True,  # credentials ride on every request; restarts do not break client sessions
     json_response=True,
@@ -40,6 +44,8 @@ mcp = FastMCP(
 
 
 tools.register(mcp)
+search_tools.register(mcp)
+create_tools.register(mcp)
 
 
 @mcp.custom_route("/mcp/health", methods=["GET"])

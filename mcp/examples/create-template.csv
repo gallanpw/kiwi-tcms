@@ -1,0 +1,5 @@
+suite_path,title,priority,draft,description,preconditions,postconditions,action,expected
+Contoh > Login,Login berhasil dengan akun valid,High,yes,Login dengan akun aktif.,Akun terdaftar dan aktif.,Sesi pengguna tersimpan.,Buka halaman login,Form login tampil
+,,,,,,,Isi email dan password valid,Email dan password terisi
+,,,,,,,Klik Masuk,Dashboard tampil
+Contoh > Login,Login gagal dengan password salah,Medium,yes,,,,Isi email valid dan password salah lalu klik Masuk,"Pesan error tampil, tetap di halaman login"
