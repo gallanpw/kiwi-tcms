@@ -272,14 +272,32 @@ class FakeKiwi:
             if kind == "TestCase":
                 row["tag"] = None
                 row["plans"] = []
+                self._save_case(row, args[0])
             self.db[kind].append(row)
             if kind == "Product":  # real Kiwi adds this version itself
                 self.db["Version"].append({"id": self.n + 500, "product": row["id"], "value": "unspecified"})
             return row
+        if method == "TestCase.update":
+            row = next(c for c in self.db["TestCase"] if c["id"] == args[0])
+            self._save_case(row, args[1])
+            return row.copy()
         if method == "TestCase.add_tag":
             next(c for c in self.db["TestCase"] if c["id"] == args[0])["tag"] = args[1]
         if method == "TestPlan.add_case":
             next(c for c in self.db["TestCase"] if c["id"] == args[1])["plans"].append(args[0])
+
+    def _save_case(self, row, values):
+        row.update(values)
+        if "text" in values:
+            # Kiwi saves text through forms.CharField(strip=True).
+            row["text"] = values["text"].strip()
+        for key, kind, field in (("priority", "Priority", "value"), ("case_status", "TestCaseStatus", "name"),
+                                 ("category", "Category", "name")):
+            if key in values:
+                related = next(r for r in self.db[kind] if r["id"] == values[key])
+                row[f"{key}__{field}"] = related[field]
+                if key == "category":
+                    row["category__product"] = related["product"]
 
 
 def test_import_dry_run_writes_nothing():
@@ -526,7 +544,7 @@ def test_import_keyless_dry_run_create_and_dedupe():
     assert report["cases_new"] == ["Login ok", "P-1"]
     keyless, keyed = kiwi.db["TestCase"]
     assert keyless["case_status"] == 2 and keyless["tag"] is None and keyless["priority"] == 1
-    assert keyless["text"] == "**Actions**\n\nOpen\n\n**Expected results**\n\nHome\n"
+    assert keyless["text"] == "**Actions**\n\nOpen\n\n**Expected results**\n\nHome"
     assert keyed["tag"] == "P-1"
     assert [args for method, args in kiwi.writes if method == "TestCase.add_tag"] == [(keyed["id"], "P-1")]
     assert [args for method, args in kiwi.writes if method == "TestPlan.add_case"] == [
@@ -781,11 +799,11 @@ def test_create_background_forwards_import_options(tool_kiwi, monkeypatch):
     assert kiwi.writes == []
 
 
-def test_hosted_server_lists_search_and_create_with_old_tools():
+def test_hosted_server_lists_search_create_and_update_with_old_tools():
     names = {t.name for t in asyncio.run(server.mcp.list_tools())}
     assert names == {"check_connection", "import_from_zebrunner", "get_file_format", "import_cases",
                      "import_csv_text", "get_import_status", "search_test_case", "create_test_case",
-                     "create_test_case_csv", "get_create_format"}
+                     "create_test_case_csv", "get_create_format", "get_test_case", "update_test_case"}
 
 
 # ---------------------------------------------------------- creation from tables
@@ -1006,7 +1024,7 @@ def test_create_csv_no_draft_means_proposed_and_no_means_confirmed(tool_kiwi):
     text = "suite_path,title,draft\nA,Draft,\nA,Confirmed,no\n"
     asyncio.run(create_test_case_csv(ctx, "P", text, dry_run=False))
     assert [c["case_status"] for c in kiwi.db["TestCase"]] == [2, 1]
-    assert all(c["text"] == "(no steps)\n" for c in kiwi.db["TestCase"])
+    assert all(c["text"] == "(no steps)" for c in kiwi.db["TestCase"])
 
 
 @pytest.mark.parametrize("dry_run", [True, False])
@@ -1163,5 +1181,488 @@ def test_create_csv_headerless_export_end_to_end(tool_kiwi, suffix):
     case = kiwi.db["TestCase"][0]
     assert case["case_status"] == 2 and case["tag"] is None
     assert case["text"] == (
-        "**Actions**\n\n1. Buka app\n2. Klik login\n\n**Expected results**\n\n1. Form muncul\n2. Home\n"
+        "**Actions**\n\n1. Buka app\n2. Klik login\n\n**Expected results**\n\n1. Form muncul\n2. Home"
     )
+
+
+# --------------------------------------------------------- read/update existing cases
+
+from kaspin_kiwi_mcp.update_test_case import tools as update_tools
+from kaspin_kiwi_mcp.update_test_case.text import parse_case_text
+
+
+EDIT_PARTS = {
+    "desc": "Owner logs in with a valid account.", "pre": "App installed", "post": "",
+    "steps": [("Open the app", "Login page is shown"), ("Tap Login", "Dashboard is shown")],
+}
+
+
+class UpdateKiwi(FakeKiwi):
+    """Read filters for existing-case tools and importer integration."""
+
+    def first(self, method, query):
+        if method == "TestCase.filter":
+            rows = self.call(method, query)
+            return rows[0] if rows else None
+        return super().first(method, query)
+
+    def call(self, method, *args):
+        if method.endswith(".filter"):
+            query = args[0]
+            self.reads.append((method, query))
+            kind = method.split(".")[0]
+            if kind == "TestCase":
+                def matches(row):
+                    for key, value in query.items():
+                        if key == "plan":
+                            if value not in row.get("plans", []):
+                                return False
+                        elif key == "summary__iexact":
+                            if row["summary"].casefold() != value.casefold():
+                                return False
+                        elif row.get(key) != value:
+                            return False
+                    return True
+                return [row.copy() for row in self.db[kind] if matches(row)]
+            if kind == "TestPlan" and "cases" in query:
+                case = next(row for row in self.db["TestCase"] if row["id"] == query["cases"])
+                return [row.copy() for row in self.db[kind] if row["id"] in case["plans"]]
+            return [row.copy() for row in self.db[kind] if all(row.get(k) == v for k, v in query.items())]
+        if method == "TestCase.update" or method.endswith(".create") or method in ("TestCase.add_tag", "TestPlan.add_case"):
+            return super().call(method, *args)
+        pytest.fail(f"Unexpected write: {method}")
+
+
+@pytest.fixture
+def update_kiwi(tool_kiwi, monkeypatch):
+    from kaspin_kiwi_mcp.backup_test_case import tools as backup
+    from kaspin_kiwi_mcp.create_test_case import tools as create
+
+    base, ctx = tool_kiwi
+    kiwi = UpdateKiwi()
+    kiwi.db = base.db
+    kiwi.db["TestCaseStatus"].extend([{"id": 3, "name": "DISABLED"}, {"id": 4, "name": "NEED_UPDATE"}])
+    kiwi.db["Tag"] = [{"id": 1, "name": "KPWEB-1", "case": 123}]
+    kiwi.db["Product"][0]["name"] = "KPWEB"
+    kiwi.db["TestPlan"] = [{"id": 20, "name": "Login"}]
+    kiwi.db["TestCase"] = [{
+        "id": 123, "category__product": 10, "category": 30, "category__name": "Login",
+        "summary": "Login success", "priority": 3, "priority__value": "P3",
+        "case_status": 2, "case_status__name": "PROPOSED", "plans": [20], "text": case_text(EDIT_PARTS).strip(),
+    }]
+
+    async def login(creds):
+        assert creds.kiwi == ["qa", "pw"]
+        return kiwi
+
+    for module in (backup, create, update_tools):
+        monkeypatch.setattr(module, "_login", login)
+    return kiwi, ctx
+
+
+@pytest.mark.parametrize("parts", [
+    {"desc": "Description only", "pre": "", "post": "", "steps": []},
+    {"desc": "", "pre": "Setup", "post": "Teardown", "steps": [("Open", "Shown")]},
+    EDIT_PARTS,
+    {**EDIT_PARTS, "steps": [("Single action", "Single expected")]},
+    {**EDIT_PARTS, "steps": [("Open\nthen click", "Shown\nnext line")]},
+    {**EDIT_PARTS, "steps": [("Open\n  retain spaces", "Shown\nnext"), ("Click\nagain", "Done\nnow")]},
+    {**EDIT_PARTS, "steps": [("Open", "Shown"), ("", "Done")]},
+    {**EDIT_PARTS, "steps": [("", "Shown"), ("Click", "")]},
+    {"desc": "", "pre": "", "post": "", "steps": []},
+])
+def test_parse_case_text_roundtrip(parts):
+    stored = case_text(parts)
+    parsed = parse_case_text(stored)
+    assert parsed == parts
+    assert case_text(parsed) == stored
+    assert parse_case_text(stored.rstrip()) == parsed
+
+
+@pytest.mark.parametrize("stored", ["", " \n\t", "(no steps)\n", "(no steps)", " \t(no steps)\n "])
+def test_parse_case_text_empty(stored):
+    assert parse_case_text(stored) == {"desc": "", "pre": "", "post": "", "steps": []}
+
+
+@pytest.mark.parametrize("stored", [
+    "Steps:\n1. open\n2. click",
+    " **Description**\n\nleading whitespace\n",
+    "\n**Description**\n\nleading newline\n",
+    "**Setup**\n\ns\n\n**Description**\n\nd\n",
+    "**Description**\n\none\n\n**Description**\n\ntwo\n",
+    "**Actions**\n\n1. first\n2. second\nno indentation\n",
+    "**Actions**\n\n1. first\n1. again\n",
+    "**Actions**\n\n1. first\n3. invisible second step\n",
+    "**Actions**\n\n999999999999999999999999. unsafe position\n",
+])
+def test_parse_case_text_foreign_or_noncanonical(stored):
+    assert parse_case_text(stored) is None
+
+
+@pytest.mark.parametrize("action", ["1. foo", "1. foo\n2. bar", "1. foo\n   bar"])
+def test_parse_case_text_number_like_single_action_never_changes_text(action):
+    stored = case_text({"steps": [(action, "")]})
+    parsed = parse_case_text(stored)
+    assert parsed is None or case_text(parsed) == stored
+
+
+def test_get_test_case_kaspin_exact_and_tags(update_kiwi):
+    kiwi, ctx = update_kiwi
+    kiwi.db["TestCase"][0].update(priority=1, priority__value="P1")
+    assert asyncio.run(update_tools.get_test_case(ctx, "KPWEB", 123)) == (
+        "#123 in product KPWEB\n"
+        "title: Login success\nstatus: PROPOSED\npriority: P1\ncategory: Login\ntags: KPWEB-1\n"
+        "text format: kaspin (description, preconditions, steps, postconditions can be updated one by one)\n"
+        "description:\n  Owner logs in with a valid account.\npreconditions:\n  App installed\n"
+        "steps:\n  1. action: Open the app\n     expected: Login page is shown\n"
+        "  2. action: Tap Login\n     expected: Dashboard is shown\npostconditions:\n  (none)"
+    )
+    assert kiwi.reads == [("Product.filter", {"name": "KPWEB"}),
+                          ("TestCase.filter", {"id": 123, "category__product": 10}),
+                          ("Tag.filter", {"case": 123})]
+    assert kiwi.writes == []
+
+
+def test_get_test_case_raw_truncated(update_kiwi):
+    kiwi, ctx = update_kiwi
+    kiwi.db["TestCase"][0]["text"] = "x" * 4000 + "DO NOT SHOW"
+    result = asyncio.run(update_tools.get_test_case(ctx, "KPWEB", 123))
+    assert "text format: raw (not written by kaspin-kiwi;" in result
+    assert "description, preconditions, postconditions AND steps together" in result
+    assert "x" * 4000 in result and "... (truncated)" in result and "DO NOT SHOW" not in result
+    assert kiwi.writes == []
+
+
+def test_get_test_case_multiline_and_empty_sections(update_kiwi):
+    kiwi, ctx = update_kiwi
+    kiwi.db["Tag"] = []
+    kiwi.db["TestCase"][0]["text"] = case_text({
+        "desc": "First\nSecond", "steps": [("Open\nClick", "Shown\nDone")],
+    })
+    result = asyncio.run(update_tools.get_test_case(ctx, "KPWEB", 123))
+    assert "tags: (none)" in result and "description:\n  First\n  Second" in result
+    assert "1. action:\n       Open\n       Click\n     expected:\n       Shown\n       Done" in result
+    assert "preconditions:\n  (none)" in result and "postconditions:\n  (none)" in result
+
+
+@pytest.mark.parametrize("tool", [update_tools.get_test_case, update_tools.update_test_case])
+@pytest.mark.parametrize("product, case_id, message", [
+    ("Typo", 123, "Product 'Typo' does not exist in Kiwi."),
+    ("OTHER", 123, "Test case #123 was not found in product 'OTHER'."),
+    ("KPWEB", 999, "Test case #999 was not found in product 'KPWEB'."),
+])
+def test_read_update_product_guard(update_kiwi, tool, product, case_id, message):
+    kiwi, ctx = update_kiwi
+    kiwi.db["Product"].append({"id": 11, "name": "OTHER"})
+    kwargs = {"title": "Changed", "dry_run": False} if tool is update_tools.update_test_case else {}
+    with pytest.raises(ValueError) as exc:
+        asyncio.run(tool(ctx, product, case_id, **kwargs))
+    assert str(exc.value) == message
+    assert kiwi.writes == []
+
+
+def test_update_dry_run_default_reports_only_changes(update_kiwi):
+    kiwi, ctx = update_kiwi
+    result = asyncio.run(update_tools.update_test_case(ctx, "KPWEB", 123, title="Login succeeds", priority="High"))
+    assert result == (
+        "DRY RUN (nothing written) - test case #123 in KPWEB\n"
+        'title: "Login success" -> "Login succeeds"\npriority: P3 -> P1\n'
+        "Run again with dry_run=false to write this to Kiwi."
+    )
+    assert kiwi.writes == []
+
+
+@pytest.mark.parametrize("priority", ["High", "P1"])
+def test_update_writes_once_with_only_changed_keys(update_kiwi, priority):
+    kiwi, ctx = update_kiwi
+    result = asyncio.run(update_tools.update_test_case(
+        ctx, "KPWEB", 123, title="  Login succeeds  ", priority=priority, status="proposed", dry_run=False,
+    ))
+    assert kiwi.writes == [("TestCase.update", (123, {"summary": "Login succeeds", "priority": 1}))]
+    assert result.startswith("UPDATED - test case #123 in KPWEB\n")
+    assert "Run again" not in result and "status:" not in result and "description:" not in result
+
+
+@pytest.mark.parametrize("priority, value, id_", [
+    ("Medium", "P3", 3), ("Low", "P4", 4), ("Trivial", "P5", 5), ("Not set", "P3", 3),
+    ("P2", "P2", 2), ("P3", "P3", 3), ("P4", "P4", 4), ("P5", "P5", 5),
+])
+def test_update_priority_mapping(update_kiwi, priority, value, id_):
+    kiwi, ctx = update_kiwi
+    kiwi.db["TestCase"][0].update(priority=1, priority__value="P1")
+    result = asyncio.run(update_tools.update_test_case(ctx, "KPWEB", 123, priority=priority, dry_run=False))
+    assert f"priority: P1 -> {value}" in result
+    assert kiwi.writes == [("TestCase.update", (123, {"priority": id_}))]
+    assert ("Priority.filter", {"value": value}) in kiwi.reads
+
+
+@pytest.mark.parametrize("priority", ["Urgent", "high", "p1", "P6", " High", ""])
+def test_update_invalid_priority_lists_accepted(update_kiwi, priority):
+    kiwi, ctx = update_kiwi
+    with pytest.raises(ValueError) as exc:
+        asyncio.run(update_tools.update_test_case(ctx, "KPWEB", 123, priority=priority, dry_run=False))
+    assert "High, Medium, Low, Trivial, Not set, P1, P2, P3, P4, P5" in str(exc.value)
+    assert kiwi.writes == []
+
+
+def test_update_priority_missing_from_instance(update_kiwi):
+    kiwi, ctx = update_kiwi
+    kiwi.db["Priority"] = []
+    with pytest.raises(ValueError, match="Priority 'P1' does not exist"):
+        asyncio.run(update_tools.update_test_case(ctx, "KPWEB", 123, priority="P1", dry_run=False))
+    assert kiwi.writes == []
+
+
+@pytest.mark.parametrize("status, expected, id_", [("confirmed", "CONFIRMED", 1), ("Disabled", "DISABLED", 3),
+                                                 ("need_update", "NEED_UPDATE", 4)])
+def test_update_status_case_insensitive(update_kiwi, status, expected, id_):
+    kiwi, ctx = update_kiwi
+    result = asyncio.run(update_tools.update_test_case(ctx, "KPWEB", 123, status=status, dry_run=False))
+    assert f"status: PROPOSED -> {expected}" in result
+    assert kiwi.writes == [("TestCase.update", (123, {"case_status": id_}))]
+
+
+@pytest.mark.parametrize("status", ["INVALID", "DISABLED"])
+def test_update_unknown_or_unavailable_status_lists_instance(update_kiwi, status):
+    kiwi, ctx = update_kiwi
+    kiwi.db["TestCaseStatus"] = kiwi.db["TestCaseStatus"][:2]
+    with pytest.raises(ValueError) as exc:
+        asyncio.run(update_tools.update_test_case(ctx, "KPWEB", 123, status=status, dry_run=False))
+    assert str(exc.value) == "status must be one of: CONFIRMED, PROPOSED."
+    assert kiwi.writes == []
+
+
+@pytest.mark.parametrize("kwargs, replacements", [
+    ({"description": "Changed\nsecond line"}, {"desc": "Changed\nsecond line"}),
+    ({"description": ""}, {"desc": ""}),
+    ({"preconditions": ""}, {"pre": ""}),
+    ({"postconditions": "Cleanup"}, {"post": "Cleanup"}),
+    ({"steps": [{"action": "New", "expected": "Done"}]}, {"steps": [("New", "Done")]}),
+    ({"steps": []}, {"steps": []}),
+])
+def test_update_partial_text_merge_preserves_other_parts(update_kiwi, kwargs, replacements):
+    kiwi, ctx = update_kiwi
+    result = asyncio.run(update_tools.update_test_case(ctx, "KPWEB", 123, **kwargs, dry_run=False))
+    expected = {**EDIT_PARTS, **replacements}
+    assert kiwi.writes == [("TestCase.update", (123, {"text": case_text(expected)}))]
+    assert parse_case_text(kiwi.db["TestCase"][0]["text"]) == expected
+    if "steps" not in kwargs:
+        assert "steps:" not in result and "Dashboard is shown" not in result
+    else:
+        assert "description:" not in result and EDIT_PARTS["desc"] not in result
+        assert f"steps: 2 -> {len(expected['steps'])} step(s)" in result
+
+
+def test_update_text_preview_before_after(update_kiwi):
+    kiwi, ctx = update_kiwi
+    result = asyncio.run(update_tools.update_test_case(
+        ctx, "KPWEB", 123, description="Owner uses valid owner account.",
+        steps=[{"action": "Open", "expected": "Shown"}],
+    ))
+    assert "description: changed\n  before: Owner logs in with a valid account.\n  after: Owner uses valid owner account." in result
+    assert "steps: 2 -> 1 step(s)\n  before:\n    1. action: Open the app" in result
+    assert "  after:\n    1. action: Open\n       expected: Shown" in result
+    assert kiwi.writes == []
+
+
+@pytest.mark.parametrize("kwargs", [
+    {"description": "Changed"}, {"steps": []},
+    {"description": "", "preconditions": "", "postconditions": ""},
+])
+def test_update_raw_refuses_partial_text(update_kiwi, kwargs):
+    kiwi, ctx = update_kiwi
+    kiwi.db["TestCase"][0]["text"] = "Steps:\n1. open\n2. click"
+    with pytest.raises(ValueError) as exc:
+        asyncio.run(update_tools.update_test_case(ctx, "KPWEB", 123, **kwargs, dry_run=False))
+    assert "get_test_case" in str(exc.value) and "all four parts" in str(exc.value)
+    assert "title/priority/status" in str(exc.value) and kiwi.writes == []
+
+
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_update_raw_full_replacement_shows_old_and_new(update_kiwi, dry_run):
+    kiwi, ctx = update_kiwi
+    kiwi.db["TestCase"][0]["text"] = "Legacy text\n" + "x" * 1488 + "HIDDEN"
+    result = asyncio.run(update_tools.update_test_case(
+        ctx, "KPWEB", 123, description="New description", preconditions="", postconditions="",
+        steps=[{"action": "Open", "expected": "Done"}], dry_run=dry_run,
+    ))
+    assert "text: replacing raw text\n  before (raw text):\n    Legacy text" in result
+    assert "... (truncated)" in result and "HIDDEN" not in result
+    assert "  after:\n    **Description**\n    \n    New description" in result
+    assert "    **Actions**" in result and "    Open" in result
+    expected = case_text({"desc": "New description", "steps": [("Open", "Done")]})
+    assert kiwi.writes == ([] if dry_run else [("TestCase.update", (123, {"text": expected}))])
+
+
+def test_update_raw_allows_metadata_only(update_kiwi):
+    kiwi, ctx = update_kiwi
+    kiwi.db["TestCase"][0]["text"] = "Foreign content"
+    result = asyncio.run(update_tools.update_test_case(ctx, "KPWEB", 123, title="Changed", dry_run=False))
+    assert kiwi.writes == [("TestCase.update", (123, {"summary": "Changed"}))]
+    assert "Foreign content" not in result and "text:" not in result
+
+
+def test_update_noop_all_fields_writes_nothing(update_kiwi):
+    kiwi, ctx = update_kiwi
+    result = asyncio.run(update_tools.update_test_case(
+        ctx, "KPWEB", 123, title=" Login success ", priority="Medium", status="proposed",
+        description=EDIT_PARTS["desc"], preconditions=EDIT_PARTS["pre"], postconditions="",
+        steps=[{"action": a, "expected": e} for a, e in EDIT_PARTS["steps"]], dry_run=False,
+    ))
+    assert result == "No changes: test case #123 already has these values."
+    assert kiwi.writes == []
+    assert not any(method == "TestPlan.filter" for method, query in kiwi.reads)
+
+
+def test_update_empty_text_noop_and_merge(update_kiwi):
+    kiwi, ctx = update_kiwi
+    kiwi.db["TestCase"][0]["text"] = " \n"
+    assert asyncio.run(update_tools.update_test_case(ctx, "KPWEB", 123, description="", dry_run=False)).startswith("No changes:")
+    assert kiwi.writes == []
+    asyncio.run(update_tools.update_test_case(ctx, "KPWEB", 123, description="Added", dry_run=False))
+    assert kiwi.writes == [("TestCase.update", (123, {"text": "**Description**\n\nAdded\n"}))]
+
+
+def test_update_requires_fields(update_kiwi):
+    kiwi, ctx = update_kiwi
+    with pytest.raises(ValueError) as exc:
+        asyncio.run(update_tools.update_test_case(ctx, "KPWEB", 123))
+    assert str(exc.value) == (
+        "Nothing to update: give at least one of title, priority, status, description, preconditions, postconditions, steps."
+    )
+    assert kiwi.reads == [] and kiwi.writes == []
+
+
+@pytest.mark.parametrize("title", ["", " \n\t", "x" * 256])
+def test_update_rejects_invalid_title(update_kiwi, title):
+    kiwi, ctx = update_kiwi
+    with pytest.raises(ValueError, match="title must be non-empty and at most 255 characters"):
+        asyncio.run(update_tools.update_test_case(ctx, "KPWEB", 123, title=title, dry_run=False))
+    assert kiwi.reads == [] and kiwi.writes == []
+
+
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_update_title_collision_warns_other_case_only(update_kiwi, dry_run):
+    kiwi, ctx = update_kiwi
+    kiwi.db["TestCase"].extend([
+        {"id": 124, "summary": "LOGIN SUCCEEDS", "plans": [20]},
+        {"id": 125, "summary": "Login succeeds", "plans": [21]},
+    ])
+    result = asyncio.run(update_tools.update_test_case(ctx, "KPWEB", 123, title="Login succeeds", dry_run=dry_run))
+    assert "WARNING: another case #124 in plan 'Login' already has this title." in result
+    assert "#125" not in result
+    assert ("TestPlan.filter", {"cases": 123}) in kiwi.reads
+    assert ("TestCase.filter", {"plan": 20, "summary__iexact": "Login succeeds"}) in kiwi.reads
+    assert kiwi.writes == ([] if dry_run else [("TestCase.update", (123, {"summary": "Login succeeds"}))])
+
+
+def test_update_title_collision_ignores_self(update_kiwi):
+    kiwi, ctx = update_kiwi
+    result = asyncio.run(update_tools.update_test_case(ctx, "KPWEB", 123, title="LOGIN SUCCESS"))
+    assert "WARNING" not in result
+    assert ("TestCase.filter", {"plan": 20, "summary__iexact": "LOGIN SUCCESS"}) in kiwi.reads
+    assert kiwi.writes == []
+
+
+def test_created_case_get_update_noop_with_stripped_storage(update_kiwi):
+    from kaspin_kiwi_mcp.create_test_case.tools import create_test_case
+
+    kiwi, ctx = update_kiwi
+    parts = {
+        "desc": "Owner logs in.\nKeep description spacing  ",
+        "pre": "App installed\nKeep setup spacing  ",
+        "post": "Session active\nCleanup remains",
+        "steps": [("Open the app\nTap Login", "Login page\nDashboard"), ("Check owner", "Owner shown")],
+    }
+    steps = [{"action": action, "expected": expected} for action, expected in parts["steps"]]
+    report = asyncio.run(create_test_case(ctx, "KPWEB", [{
+        "suite_path": "Regression > Login", "title": "Created login", "description": parts["desc"],
+        "preconditions": parts["pre"], "postconditions": parts["post"], "steps": steps,
+    }], dry_run=False))
+    assert "cases created: 1" in report
+    created = next(row for row in kiwi.db["TestCase"] if row["summary"] == "Created login")
+    case_id = created["id"]
+    assert created["text"] == case_text(parts).strip()
+    assert parse_case_text(created["text"]) == parts
+    kiwi.writes.clear()
+    before = asyncio.run(update_tools.get_test_case(ctx, "KPWEB", case_id))
+    assert "text format: kaspin" in before
+    assert "  1. action:\n       Open the app\n       Tap Login\n     expected:\n       Login page\n       Dashboard" in before
+    assert "  2. action: Check owner\n     expected: Owner shown" in before
+    unchanged_sections = (
+        "description:\n  Owner logs in.\n  Keep description spacing  ",
+        "preconditions:\n  App installed\n  Keep setup spacing  ",
+        "postconditions:\n  Session active\n  Cleanup remains",
+    )
+    assert all(section in before for section in unchanged_sections)
+    assert kiwi.writes == []
+
+    new_steps = steps + [{"action": "Log out", "expected": "Login shown"}]
+    updated = asyncio.run(update_tools.update_test_case(ctx, "KPWEB", case_id, steps=new_steps, dry_run=False))
+    expected_parts = {**parts, "steps": parts["steps"] + [("Log out", "Login shown")]}
+    assert "steps: 2 -> 3 step(s)" in updated
+    assert kiwi.writes == [("TestCase.update", (case_id, {"text": case_text(expected_parts)}))]
+    assert created["text"] == case_text(expected_parts).strip()
+    parsed = parse_case_text(created["text"])
+    assert parsed == expected_parts
+    for key in ("desc", "pre", "post"):
+        assert parsed[key].encode() == parts[key].encode()
+    after = asyncio.run(update_tools.get_test_case(ctx, "KPWEB", case_id))
+    assert "text format: kaspin" in after
+    assert all(section in after for section in unchanged_sections)
+    assert "  3. action: Log out\n     expected: Login shown" in after
+
+    stored = created["text"]
+    kiwi.writes.clear()
+    assert asyncio.run(update_tools.update_test_case(ctx, "KPWEB", case_id, steps=new_steps, dry_run=False)) == (
+        f"No changes: test case #{case_id} already has these values."
+    )
+    assert kiwi.writes == [] and created["text"] == stored
+
+
+def test_created_empty_case_get_and_partial_update_with_stripped_storage(update_kiwi):
+    from kaspin_kiwi_mcp.create_test_case.tools import create_test_case
+
+    kiwi, ctx = update_kiwi
+    asyncio.run(create_test_case(ctx, "KPWEB", [{"suite_path": "Regression", "title": "Empty case"}], dry_run=False))
+    created = next(row for row in kiwi.db["TestCase"] if row["summary"] == "Empty case")
+    case_id = created["id"]
+    assert created["text"] == "(no steps)"
+    assert parse_case_text(created["text"]) == {"desc": "", "pre": "", "post": "", "steps": []}
+    result = asyncio.run(update_tools.get_test_case(ctx, "KPWEB", case_id))
+    assert "text format: kaspin" in result and "steps:\n  (none)" in result
+    kiwi.writes.clear()
+    asyncio.run(update_tools.update_test_case(ctx, "KPWEB", case_id, description="x", dry_run=False))
+    assert kiwi.writes == [("TestCase.update", (case_id, {"text": "**Description**\n\nx\n"}))]
+    assert created["text"] == "**Description**\n\nx"
+    parsed = parse_case_text(created["text"])
+    assert parsed == {"desc": "x", "pre": "", "post": "", "steps": []}
+    assert case_text(parsed).rstrip() == created["text"]
+
+
+@pytest.mark.parametrize("ending", ["", "\n", " \t\n\n"])
+def test_parse_case_text_accepts_stripped_legacy_and_trailing_whitespace(ending):
+    stored = "**Description**\n\nSaved description" + ending
+    parsed = parse_case_text(stored)
+    assert parsed == {"desc": "Saved description", "pre": "", "post": "", "steps": []}
+    assert case_text(parsed).rstrip() == stored.rstrip()
+
+
+@pytest.mark.parametrize("stored", ["Steps:\n1. open\n2. click", " **Description**\n\nLeading space\n"])
+def test_get_and_partial_update_keep_foreign_and_leading_whitespace_raw(update_kiwi, stored):
+    kiwi, ctx = update_kiwi
+    kiwi.db["TestCase"][0]["text"] = stored
+    assert "text format: raw" in asyncio.run(update_tools.get_test_case(ctx, "KPWEB", 123))
+    with pytest.raises(ValueError, match="Call get_test_case first"):
+        asyncio.run(update_tools.update_test_case(ctx, "KPWEB", 123, description="Changed", dry_run=False))
+    assert kiwi.writes == [] and kiwi.db["TestCase"][0]["text"] == stored
+
+
+@pytest.mark.parametrize("ending", ["", "\n"])
+def test_update_ignores_only_trailing_text_whitespace(update_kiwi, ending):
+    kiwi, ctx = update_kiwi
+    kiwi.db["TestCase"][0]["text"] = "**Description**\n\nx" + ending
+    assert asyncio.run(update_tools.update_test_case(ctx, "KPWEB", 123, description="x \t\n", dry_run=False)) == (
+        "No changes: test case #123 already has these values."
+    )
+    assert kiwi.writes == []
