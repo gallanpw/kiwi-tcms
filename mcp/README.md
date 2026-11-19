@@ -18,6 +18,8 @@ Cara kerja: server MCP ini di-hosting di server Kiwi (`https://<domain-kiwi>/mcp
 | `create_test_case(product, cases, dry_run=true)` | Buat case baru di Kiwi (maks 100); pratinjau dulu, draft (PROPOSED) secara default, key opsional. Product harus sudah ada; tool ini tidak membuat Product. |
 | `create_test_case_csv(product, csv_text, dry_run=true)` | Buat case baru dari tabel CSV/Excel/Google Sheets yang dibaca AI dan dikirim sebagai teks (maks 100 case, 1.000.000 karakter). |
 | `get_create_format()` | Format tabel tetap untuk case baru; baca sebelum memakai `create_test_case_csv`. Hanya membaca. |
+| `get_test_case(product, case_id)` | Baca satu case beserta tag dan bagian teksnya; product harus memiliki case tersebut. |
+| `update_test_case(product, case_id, title?, priority?, status?, description?, preconditions?, postconditions?, steps?, dry_run=true)` | Ubah satu case yang sudah ada; field yang tidak dikirim tetap, pratinjau dahulu. |
 
 Aturan main:
 - `dry_run=true` adalah default: hanya melaporkan apa yang akan dibuat. Tulis ke Kiwi dengan `dry_run=false` setelah laporan dicek.
@@ -136,6 +138,18 @@ File yang dilampirkan di chat dibaca AI lalu dikirim sebagai data (`import_cases
 ### Link upload (opsional, default mati, khusus backup/impor)
 
 Server dapat menyediakan link upload sekali pakai (15 menit, maks 5 MB) untuk file besar, tanpa melewati AI. Fitur ini menambah satu URL publik, jadi **tidak aktif** kecuali `MCP_ENABLE_UPLOAD=1` di `mcp.env` server. Bila aktif, tersedia tool `create_upload_link()` dan `import_uploaded_file(upload_id, product, dry_run=true)`.
+
+## Mengubah satu test case yang sudah ada
+
+Panggil `get_test_case(product, case_id)` dahulu, lalu `update_test_case` dengan field yang ingin diubah. Product harus memiliki case tersebut. `dry_run=true` menampilkan nilai sebelum/sesudah tanpa menulis; lanjutkan dengan `dry_run=false` hanya setelah pengguna setuju. Jika nilainya sudah sama, tool melaporkan `No changes` tanpa menulis.
+
+`title` dipangkas spasi tepinya, wajib berisi teks dan maksimal 255 karakter. `priority` menerima persis High, Medium, Low, Trivial, Not set, atau P1–P5 (High=P1, Medium/Not set=P3, Low=P4, Trivial=P5). `status` menerima nama yang tersedia di instance Kiwi tanpa membedakan huruf besar/kecil; DISABLED berarti soft delete jika tersedia. Judul yang sama dengan case lain pada plan yang sama menghasilkan peringatan, tetapi perubahan tetap diperbolehkan.
+
+Field yang tidak dikirim atau bernilai `null` tidak berubah. `description`, `preconditions`, `postconditions` berisi `""` mengosongkan bagian tersebut. `steps` berisi daftar `{"action": "...", "expected": "..."}` mengganti seluruh step; `[]` mengosongkan semuanya. Teks format kaspin dapat diubah per bagian. Jika `get_test_case` menampilkan `text format: raw`, kirim **keempat** field description, preconditions, postconditions, steps sekaligus untuk mengganti seluruh teks, atau ubah hanya title/priority/status. Preview penggantian raw menampilkan teks lama (maksimal 1.500 karakter) dan teks baru.
+
+Tool ini hanya mengubah satu case melalui `TestCase.update`; tidak membuat data, memindahkan category/plan, mengedit tag/automation/component/attachment, atau mengubah banyak case sekaligus.
+
+> Pakai kaspin-kiwi: baca case #123 di product KPWEB2 dengan get_test_case, lalu tampilkan preview perubahan priority menjadi High dan description menjadi "Owner login memakai akun valid". Tulis hanya setelah saya setuju.
 
 ## Membuat test case baru dari file (CSV / Excel / Google Sheets)
 
